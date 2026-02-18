@@ -1,10 +1,10 @@
 # Hybrid Quantum-Classical Genetic Algorithm for EV Charging Station Placement
 
-## Project Baseline Document
+<!-- ## Project Baseline Document -->
 
----
+<!-- --- -->
 
-## 1. Project Overview
+## Project Overview
 
 This project develops a hybrid quantum-classical algorithm that optimally places new electric vehicle (EV) charging stations in a city-like environment. The approach combines Quantum Approximate Optimization Algorithm (QAOA) via Qiskit with a classical Genetic Algorithm (GA) to produce high-quality placement recommendations.
 
