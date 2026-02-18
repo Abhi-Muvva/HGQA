@@ -437,13 +437,15 @@ $$H_5 = \lambda (\sum_i x_i - m)^2$$
 
 **Expanding the square** (with careful handling of binary variables where $x_i^2 = x_i$):
 
-$$(\sum_i x_i - m)^2 = (\sum_i x_i)^2 - 2m(\sum_i x_i) + m^2$$
+$$\left(\sum_i x_i - m\right)^2 = \left(\sum_i x_i\right)^2 - 2m\left(\sum_i x_i\right) + m^2$$
 
-$$(\sum_i x_i)^2 = \sum_i x_i^2 + \sum_{i \neq j} x_i x_j = \sum_i x_i + 2\sum_{i<j} x_i x_j$$
+$$\left(\sum_i x_i\right)^2 = \sum_i x_i^2 + \sum_{i \ne j} x_i x_j = \sum_i x_i + 2\sum_{i < j} x_i x_j$$
 
 Therefore:
 
-$$H_5 = \lambda \left( \sum_i x_i + 2\sum_{i<j} x_i x_j - 2m\sum_i x_i + m^2 \right) = \lambda\sum_i(1-2m)x_i + 2\lambda\sum_{i<j}x_ix_j + \lambda m^2$$
+$$H_5 = \lambda \left(\sum_i x_i + 2\sum_{i < j} x_i x_j - 2m\sum_i x_i + m^2\right)$$
+
+$$= \lambda \sum_i (1-2m) x_i + 2\lambda \sum_{i < j} x_i x_j + \lambda m^2$$
 
 
 Which gives:
