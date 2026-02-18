@@ -134,9 +134,6 @@ Key properties of this design:
 ### Grid Data Table
 After gridding and weight calculation, each cell contains:
 
-| Field | Description |
-|-------|-------------|
-Here's the updated grid data table:
 
 | Field | Description |
 |-------|-------------|
@@ -279,12 +276,12 @@ $$H_{final} = \alpha_1 H_1 + \alpha_2 H_2 + \alpha_3 H_3 + \alpha_4 H_4 + \alpha
 
 ### Objective Term H1 — POI Attraction (Minimize → Place Chargers Near Underserved Dense Areas)
 
-> $$H_1 = -\sum_{i} x_i \sum_{c \in C_{POI}} \frac{w_c \cdot s_c}{1 + d(i, c)}$$
+$$H_1 = -\sum_{i} x_i \sum_{c \in C_{POI}} \frac{w_c \cdot s_c}{1 + d(i, c)}$$
 
 
 where the service gap factor `s_c` is a precomputed constant:
 
-> $$s_c = \frac{1}{1+ \sum_{e \in E_{all}} \frac{1}{1+d(c, e)}}$$
+$$s_c = \frac{1}{1+ \sum_{e \in E_{all}} \frac{1}{1+d(c, e)}}$$
 
 
 **What it does:** For each candidate cell `i`, it computes how attractive that cell is based on the weighted proximity to ALL POI cells, discounted by how well those POIs are already served by existing chargers. Cells closer to high-weight, underserved POI clusters get a more negative (better) score.
@@ -318,15 +315,14 @@ where the service gap factor `s_c` is a precomputed constant:
 
 **QUBO placement:** Linear in `x_i` → **diagonal** of Q matrix:
 
-$$Q_{ii} \mathrel{+}= \alpha_1 \left( -\sum_{c \in C_{POI}} \frac{w_c \cdot s_c}{1 + d(i, c)} \right)$$
+> $$Q_{ii} \mathrel{+}= \alpha_1 \left( -\sum_{c \in C_{POI}} \frac{w_c \cdot s_c}{1 + d(i, c)} \right)$$
 
 ---
 
 ### Objective Term H2 — Gas Station Co-location Bonus (Minimize → Prefer Gas Station Cells)
 
-> $$H_2 = - \sum_{i} x_i \beta g_i$$
+$$H_2 = - \sum_{i} x_i \beta g_i$$
 
-<!-- H2 = - Σ_i  x_i × β × g_i -->
 
 
 **What it does:** Gives a bonus (negative contribution = better score) when a charger is placed in a cell that has a gas station.
@@ -349,13 +345,13 @@ $$Q_{ii} \mathrel{+}= \alpha_1 \left( -\sum_{c \in C_{POI}} \frac{w_c \cdot s_c}
 
 **QUBO placement:** Linear in `x_i` → **diagonal**:
 
-$$Q_{ii} \mathrel{+}= \alpha_2 \left( -\beta \cdot g_i \right)$$
+> $$Q_{ii} \mathrel{+}= \alpha_2 \left( -\beta \cdot g_i \right)$$
 
 ---
 
 ### Objective Term H3 — Existing Charger Penalty (Minimize → Avoid Redundancy in Low-Density Areas)
 
-> $$H_3 = + \sum_{i} x_i \gamma (1-nw_c) \sum_{e \in E_{all}} \frac{1}{1+d(i, e)}$$
+$$H_3 = + \sum_{i} x_i \gamma (1-nw_c) \sum_{e \in E_{all}} \frac{1}{1+d(i, e)}$$
 
 
 
@@ -389,13 +385,13 @@ $$Q_{ii} \mathrel{+}= \alpha_2 \left( -\beta \cdot g_i \right)$$
 
 **QUBO placement:** Linear in `x_i` → **diagonal**:
 
-$$Q_{ii} \mathrel{+}= \alpha_3 \left( \gamma \cdot (1 - nw_i) \sum_{e \in E_{all}} \frac{1}{1 + d(i, e)} \right)$$
+> $$Q_{ii} \mathrel{+}= \alpha_3 \left( \gamma \cdot (1 - nw_i) \sum_{e \in E_{all}} \frac{1}{1 + d(i, e)} \right)$$
 
 ---
 
 ### Objective Term H4 — New Charger Spacing (Minimize → Spread New Chargers in Low-Density Areas)
 
-> $$H_4 = + \sum_{i}\sum_{j>i} x_i x_j \delta \frac{1- \max(nw_i, nw_j)}{1 + d(i, j)}$$
+$$H_4 = + \sum_{i}\sum_{j>i} x_i x_j \delta \frac{1- \max(nw_i, nw_j)}{1 + d(i, j)}$$
 
 
 **What it does:** Penalizes placing two NEW chargers close to each other, but only when neither cell is high-density.
@@ -424,13 +420,13 @@ $$Q_{ii} \mathrel{+}= \alpha_3 \left( \gamma \cdot (1 - nw_i) \sum_{e \in E_{all
 
 **QUBO placement:** Quadratic → **off-diagonal** (upper triangular, i < j):
 
-$$Q_{ij} \mathrel{+}= \alpha_4 \left( \delta \cdot \frac{1 - \max(nw_i, nw_j)}{1 + d(i, j)} \right)$$
+> $$Q_{ij} \mathrel{+}= \alpha_4 \left( \delta \cdot \frac{1 - \max(nw_i, nw_j)}{1 + d(i, j)} \right)$$
 
 ---
 
 ### Constraint Term H5 — Exact Number of Chargers
 
-> $$H_5 = \lambda (\sum_i x_i - m)^2$$
+$$H_5 = \lambda (\sum_i x_i - m)^2$$
 
 **What it does:** Forces the solution to place exactly `m` new chargers
 
@@ -471,15 +467,15 @@ Which gives:
 
 **QUBO placement:** Both **diagonal and off-diagonal**:
 
-$$Q_{ii} \mathrel{+}= \alpha_5 \cdot \lambda \cdot (1 - 2m)$$
+> $$Q_{ii} \mathrel{+}= \alpha_5 \cdot \lambda \cdot (1 - 2m)$$
 
-$$Q_{ij} \mathrel{+}= \alpha_5 \cdot 2\lambda \qquad \text{for } i < j$$
+> $$Q_{ij} \mathrel{+}= \alpha_5 \cdot 2\lambda \qquad \text{for } i < j$$
 
 ---
 
 ### Objective Term H6 — Coverage Redundancy (Minimize → Don't Waste Chargers on Same Cluster)
 
-> $$H_6 = + \sum_i \sum_{j>i} x_i x_j \varepsilon \sum_{c \in C_{POI}, d(i,c) \leq R, d(j,c) \leq R} \frac {w_c}{(1+d(i,c))(1+d(j,c))}$$
+$$H_6 = + \sum_i \sum_{j>i} x_i x_j \varepsilon \sum_{c \in C_{POI}, d(i,c) \leq R, d(j,c) \leq R} \frac {w_c}{(1+d(i,c))(1+d(j,c))}$$
 
 **What it does:** Penalizes placing two new chargers such that they both serve the same POI cluster, wasting coverage.
 
@@ -517,7 +513,7 @@ H6 catches the second case that H4 misses entirely, and avoids the false positiv
 **QUBO placement:** Quadratic → **off-diagonal** (upper triangular, i < j):
 
 
-$$Q_{ij} += α₆ × ( \varepsilon \sum_{c \in C_{POI}, d(i,c) \leq R, d(j,c) \leq R} \frac {w_c}{(1+d(i,c))(1+d(j,c))} )$$
+> $$Q_{ij} += α₆ × ( \varepsilon \sum_{c \in C_{POI}, d(i,c) \leq R, d(j,c) \leq R} \frac {w_c}{(1+d(i,c))(1+d(j,c))} )$$
 
 ---
 
@@ -531,19 +527,19 @@ $$H_{final} = \alpha_1 H_1 + \alpha_2 H_2 + \alpha_3 H_3 + \alpha_4 H_4 + \alpha
 
 **DIAGONAL** ($Q_{ii}$) — encodes single-cell properties:
 
-$$Q_{ii} = \alpha_1 \left( -\sum_{c \in C_{POI}} \frac{w_c \cdot s_c}{1 + d(i,c)} \right) + \alpha_2 \left( -\beta \cdot g_i \right) + \alpha_3 \left( \gamma (1-nw_i) \sum_{e \in E_{all}} \frac{1}{1+d(i,e)} \right) + \alpha_5 \cdot \lambda (1 - 2m)$$
+> $$Q_{ii} = \alpha_1 \left( -\sum_{c \in C_{POI}} \frac{w_c \cdot s_c}{1 + d(i,c)} \right) + \alpha_2 \left( -\beta \cdot g_i \right) + \alpha_3 \left( \gamma (1-nw_i) \sum_{e \in E_{all}} \frac{1}{1+d(i,e)} \right) + \alpha_5 \cdot \lambda (1 - 2m)$$
 
 where $s_c = \frac{1}{1 + \sum_{e \in E_{all}} \frac{1}{1+d(c,e)}}$ is a precomputed constant.
 
 **OFF-DIAGONAL** ($Q_{ij}$, $i < j$) — encodes pairwise interactions:
 
-$$Q_{ij} = \alpha_4 \left( \delta \cdot \frac{1 - \max(nw_i, nw_j)}{1 + d(i,j)} \right) + \alpha_5 \cdot 2\lambda + \alpha_6 \left( \varepsilon \sum_{\substack{c \in C_{POI} \\ d(i,c) \leq R \\ d(j,c) \leq R}} \frac{w_c}{(1+d(i,c))(1+d(j,c))} \right)$$
+> $$Q_{ij} = \alpha_4 \left( \delta \cdot \frac{1 - \max(nw_i, nw_j)}{1 + d(i,j)} \right) + \alpha_5 \cdot 2\lambda + \alpha_6 \left( \varepsilon \sum_{\substack{c \in C_{POI} \\ d(i,c) \leq R \\ d(j,c) \leq R}} \frac{w_c}{(1+d(i,c))(1+d(j,c))} \right)$$
 
-
+<!-- 
 | Algorithm | How it uses Q |
 |-----------|--------------|
 | **QAOA** | Q is converted to a cost Hamiltonian (Ising model). QAOA circuit parameters are optimized to find x that minimizes x^T Q x. Multiple shots yield multiple candidate solutions. |
-| **GA** | Given an individual [42, 117, 203], convert to binary vector x, compute fitness = x^T Q x. Lower value = better individual. Standard GA operators (selection, crossover, mutation) evolve the population toward lower fitness. |
+| **GA** | Given an individual [42, 117, 203], convert to binary vector x, compute fitness = x^T Q x. Lower value = better individual. Standard GA operators (selection, crossover, mutation) evolve the population toward lower fitness. | -->
 
 ### Verification
 
