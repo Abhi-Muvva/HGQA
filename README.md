@@ -127,7 +127,7 @@ Cell 88 (no POIs):          weight = 0.0                          ← completely
 Key properties of this design:
 - High-density cells get meaningfully large weights (up to `scale_factor`)
 - Low-density cells with POIs are still considered (never fall below `min_weight`)
-- Empty cells are completely ignored (weight = 0, used in H3 and H4)
+- Empty cells are completely ignored as attraction sources (weight = 0), but can still be selected as charger locations if they are near dense cells
 - No arbitrary cutoff boundaries — the gradient is smooth
 - Automatically adapts when grid resolution changes (different qubit count)
 
@@ -142,8 +142,8 @@ After gridding and weight calculation, each cell contains:
 | Raw Density Score | Sum of population densities of POIs in this cell |
 | Normalized Score | Raw score / max raw score across all cells |
 | Cell Weight | Final weight after linear scaling with floor |
-| Gas Station Count | Number of gas stations in this cell. |
-| Existing Charger Count | Number of existing chargers in this cell.|
+| Gas Station Count | Number of gas stations in this cell (0, 1, 2, ...). Used directly as `g_i` in H2 — more gas stations = stronger co-location bonus |
+| Existing Charger Count | Number of existing chargers in this cell (0, 1, 2, ...). Used in H3 and H1's service gap factor `s_c` — more existing chargers = stronger repulsion and reduced POI attraction, reflecting saturation |
 
 
 ---
@@ -248,9 +248,11 @@ Before defining the objective terms, here is the notation used throughout:
 | `E_all` | Set of all individual existing chargers (not cells — a cell with 3 chargers contributes 3 entries) |
 | `g_i` | Number of gas stations in cell i (0, 1, 2, ...) |
 | `s_c` | Service gap factor for POI cell c (how underserved it is by existing chargers) |
-| `R` | Service radius for coverage redundancy check (tunable, default ~3-4 cells) |
-
-Great idea — a summary overview before diving into details makes it much more readable. Here's what that section would look like:
+| `R₁` | H1 attraction radius — only POIs within R₁ of cell i contribute (default ~5-6 cells) |
+| `Rₛ` | Service gap radius — only existing chargers within Rₛ of POI cell c contribute to s_c (default ~5-6 cells, matches R₁) |
+| `R₃` | H3 penalty radius — only existing chargers within R₃ of cell i contribute (default ~4-5 cells) |
+| `R₄` | H4 spacing radius — only pairs with d(i,j) ≤ R₄ get spacing penalty (default ~4-5 cells) |
+| `R₆` | H6 redundancy radius — only POIs within R₆ of BOTH chargers contribute (default ~3-4 cells) |
 
 ---
 
@@ -269,6 +271,8 @@ $$H_{final} = \alpha_1 H_1 + \alpha_2 H_2 + \alpha_3 H_3 + \alpha_4 H_4 + \alpha
 | **H5** | Charger Count Constraint | Constraint | Force exactly `m` new chargers — hard constraint via large penalty |
 | **H6** | Coverage Redundancy | Penalty (+) | Don't waste two chargers serving the same POI cluster |
 
+All terms use **local distance radii** to enforce Q matrix sparsity. Each term only considers entities within its radius, making Q grid-local sparse rather than dense. Recommended ordering: R₁ ≥ R₄ > R₃ ≥ R₆.
+
 <!-- **QUBO structure:** H1, H2, H3 are linear in `x_i` → Q matrix diagonal. H4, H5, H6 involve pairs `x_i × x_j` → Q matrix off-diagonal. H5 contributes to both. -->
 
 *Detailed derivation of each term follows below.*
@@ -276,15 +280,15 @@ $$H_{final} = \alpha_1 H_1 + \alpha_2 H_2 + \alpha_3 H_3 + \alpha_4 H_4 + \alpha
 
 ### Objective Term H1 — POI Attraction (Minimize → Place Chargers Near Underserved Dense Areas)
 
-$$H_1 = -\sum_{i} x_i \sum_{c \in C_{POI}} \frac{w_c \cdot s_c}{1 + d(i, c)}$$
+$$H_1 = -\sum_{i} x_i \sum_{\substack{c \in C_{POI} \\ d(i,c) \leq R_1}} \frac{w_c \cdot s_c}{1 + d(i, c)}$$
 
 
 where the service gap factor `s_c` is a precomputed constant:
 
-$$s_c = \frac{1}{1+ \sum_{e \in E_{all}} \frac{1}{1+d(c, e)}}$$
+$$s_c = \frac{1}{1+ \sum_{\substack{e \in E_{all} \\ d(c,e) \leq R_s}} \frac{1}{1+d(c, e)}}$$
 
 
-**What it does:** For each candidate cell `i`, it computes how attractive that cell is based on the weighted proximity to ALL POI cells, discounted by how well those POIs are already served by existing chargers. Cells closer to high-weight, underserved POI clusters get a more negative (better) score.
+**What it does:** For each candidate cell `i`, it computes how attractive that cell is based on the weighted proximity to nearby POI cells (within radius R₁), discounted by how well those POIs are already served by existing chargers (within radius Rₛ). Cells closer to high-weight, underserved POI clusters get a more negative (better) score.
 
 **Why designed this way:**
 
@@ -301,7 +305,9 @@ $$s_c = \frac{1}{1+ \sum_{e \in E_{all}} \frac{1}{1+d(c, e)}}$$
 
 - The **`1 / (1 + d(i,c))`** decay function ensures closer POIs contribute more. At distance 0 (same cell), contribution is `w_c × s_c`. At distance 1 (adjacent), it's `w_c × s_c / 2`. At distance 5, it's `w_c × s_c / 6`. The decay is gradual — distant POIs still matter, just less.
 
-- **Summing over all POI cells** means the algorithm naturally prefers locations that are centrally positioned relative to many POIs, not just close to one.
+- **Distance cutoff R₁:** Only POI cells within R₁ of cell `i` contribute. This enforces sparsity — at R₁ = 6 on a 16×16 grid, each cell considers ~168 neighbors instead of all 255, and the cutoff only discards contributions that are already less than 14% of same-cell strength. Rₛ applies the same logic to the `s_c` precomputation for consistency. The cutoff also has a desirable side effect: it makes H1 prefer locally central positions rather than globally central ones, which is more realistic for charger placement.
+
+- **Summing over nearby POI cells** means the algorithm naturally prefers locations that are centrally positioned relative to local POI clusters.
 
 **Scenario tests:**
 
@@ -311,11 +317,11 @@ $$s_c = \frac{1}{1+ \sum_{e \in E_{all}} \frac{1}{1+d(c, e)}}$$
 | Cell right on high-weight POI (w=4.0), 1 existing charger at d=0 (s=0.5) | Reduced attraction: -2.0 | 
 | Cell right on high-weight POI (w=4.0), 3 existing chargers at d=0 (s=0.25) | Heavily reduced: -1.0 | 
 | Empty cell adjacent to dense POI (d=1) | Attracted: -w×s/2 | 
-| Cell far from all POIs (d>10) | Weak attraction: ~0 | 
+| Cell far from all POIs (d>R₁) | Zero — outside cutoff | 
 
 **QUBO placement:** Linear in `x_i` → **diagonal** of Q matrix:
 
-> $$Q_{ii} \mathrel{+}= \alpha_1 \left( -\sum_{c \in C_{POI}} \frac{w_c \cdot s_c}{1 + d(i, c)} \right)$$
+> $$Q_{ii} \mathrel{+}= \alpha_1 \left( -\sum_{\substack{c \in C_{POI} \\ d(i,c) \leq R_1}} \frac{w_c \cdot s_c}{1 + d(i, c)} \right)$$
 
 ---
 
@@ -325,13 +331,13 @@ $$H_2 = - \sum_{i} x_i \beta g_i$$
 
 
 
-**What it does:** Gives a bonus (negative contribution = better score) when a charger is placed in a cell that has a gas station.
+**What it does:** Gives a bonus (negative contribution = better score) when a charger is placed in a cell that has gas stations. More gas stations in a cell = stronger bonus.
 
 **Why designed this way:**
 
 - The **negative sign** rewards gas station co-location.
 
-- `g_i` is the count of gas stations in cell i. A cell with 3 gas stations gets 3× the bonus of a cell with 1, because each gas station represents a separate co-location opportunity with its own land and infrastructure.
+- `g_i` is the **count** of gas stations in cell i (0, 1, 2, ...). A cell with 3 gas stations gets 3× the bonus of a cell with 1, because each gas station represents a separate co-location opportunity with its own land and infrastructure.
 - `β` is the bonus weight: a tunable parameter that controls how important gas station co-location is relative to other objectives. If `β` is too large, the algorithm would force chargers onto gas stations even when better POI-serving locations exist. If too small, the bonus becomes negligible. This is deliberately a soft bonus, not a hard constraint.
 - This reflects the real-world advantage: gas stations already have land, power infrastructure, and customer traffic patterns that make them natural candidates for EV charger installation.
 
@@ -351,11 +357,11 @@ $$H_2 = - \sum_{i} x_i \beta g_i$$
 
 ### Objective Term H3 — Existing Charger Penalty (Minimize → Avoid Redundancy in Low-Density Areas)
 
-$$H_3 = + \sum_{i} x_i \gamma (1-nw_c) \sum_{e \in E_{all}} \frac{1}{1+d(i, e)}$$
+$$H_3 = + \sum_{i} x_i \gamma (1-nw_i) \sum_{\substack{e \in E_{all} \\ d(i,e) \leq R_3}} \frac{1}{1+d(i, e)}$$
 
 
 
-**What it does:** Penalizes placing a new charger near an existing charger, BUT the penalty is scaled by how low-density the candidate cell is.
+**What it does:** Penalizes placing a new charger near an existing charger (within radius R₃), BUT the penalty is scaled by how low-density the candidate cell is. Sums over all individual existing chargers, so a cell with multiple existing chargers creates proportionally stronger repulsion.
 
 **Why designed this way:**
 
@@ -366,6 +372,8 @@ $$H_3 = + \sum_{i} x_i \gamma (1-nw_c) \sum_{e \in E_{all}} \frac{1}{1+d(i, e)}$
   - Medium-density cell (nw_i = 0.5): penalty factor = 0.5 → moderate penalty.
   - Low-density cell (nw_i = 0.1): penalty factor = 0.9 → strong penalty. Rationale: in sparse areas, spreading coverage is more valuable than clustering.
   - Empty cell (nw_i = 0.0): penalty factor = 1.0 → maximum penalty. No reason to cluster near existing chargers if there's no demand.
+
+- The **sum over `E_all`** (individual chargers, not cells) means a cell with 3 existing chargers at d=0 contributes `3 × 1/(1+0) = 3` to the sum, versus just `1` for a cell with 1 charger. This naturally handles saturation.
 
 - The **`1 / (1 + d(i,e))`** decay means the penalty is strongest when directly on top of an existing charger and fades with distance.
 
@@ -380,27 +388,27 @@ $$H_3 = + \sum_{i} x_i \gamma (1-nw_c) \sum_{e \in E_{all}} \frac{1}{1+d(i, e)}$
 | High-density cell (nw=0.9), 1 existing charger at d=0 | Tiny penalty: 0.1γ |
 | High-density cell (nw=0.9), 3 existing chargers at d=0 | Larger penalty: 0.3γ (saturation pushes to adjacent) |
 | Empty cell (nw=0), 1 existing charger at d=0 | Max penalty: γ |
-| Any cell far from existing chargers (d>10) | Negligible penalty |
+| Any cell far from existing chargers (d>R₃) | Zero — outside cutoff |
 | Medium cell (nw=0.5) at d=2 from 1 existing charger | Moderate: 0.167γ |
 
 **QUBO placement:** Linear in `x_i` → **diagonal**:
 
-> $$Q_{ii} \mathrel{+}= \alpha_3 \left( \gamma \cdot (1 - nw_i) \sum_{e \in E_{all}} \frac{1}{1 + d(i, e)} \right)$$
+> $$Q_{ii} \mathrel{+}= \alpha_3 \left( \gamma \cdot (1 - nw_i) \sum_{\substack{e \in E_{all} \\ d(i,e) \leq R_3}} \frac{1}{1 + d(i, e)} \right)$$
 
 ---
 
 ### Objective Term H4 — New Charger Spacing (Minimize → Spread New Chargers in Low-Density Areas)
 
-$$H_4 = + \sum_{i}\sum_{j>i} x_i x_j \delta \frac{1- \max(nw_i, nw_j)}{1 + d(i, j)}$$
+$$H_4 = + \sum_{i}\sum_{\substack{j>i \\ d(i,j) \leq R_4}} x_i x_j \delta \frac{1- \max(nw_i, nw_j)}{1 + d(i, j)}$$
 
 
-**What it does:** Penalizes placing two NEW chargers close to each other, but only when neither cell is high-density.
+**What it does:** Penalizes placing two NEW chargers close to each other (within radius R₄), but only when neither cell is high-density.
 
 **Why designed this way:**
 
 - This is a **quadratic term** (involves pairs `x_i × x_j`), capturing the interaction between two placement decisions that linear terms cannot express.
 
-- **`max(nw_i, nw_j)` instead of average:** If EITHER cell in the pair is high-density, the penalty drops i.e. , if two chargers are close but one is in a high-demand area, that clustering is justified. Using average would penalize a high-density cell paired with a low-density neighbor, which doesn't make sense. Using max means: "if there's strong demand at either location, allow the clustering."
+- **`max(nw_i, nw_j)` instead of average:** If EITHER cell in the pair is high-density, the penalty drops i.e., if two chargers are close but one is in a high-demand area, that clustering is justified. Using average would penalize a high-density cell paired with a low-density neighbor, which doesn't make sense. Using max means: "if there's strong demand at either location, allow the clustering."
 
 - The **`1 / (1 + d(i,j))`** decay means only nearby pairs get penalized. Two chargers on opposite ends of the grid don't interact.
 
@@ -414,13 +422,13 @@ $$H_4 = + \sum_{i}\sum_{j>i} x_i x_j \delta \frac{1- \max(nw_i, nw_j)}{1 + d(i, 
 |----------|----------|
 | Two chargers in adjacent high-density cells (nw=0.9, d=1) | Tiny: 0.05δ |
 | Two chargers in adjacent empty cells (nw=0, d=1) | Strong: 0.5δ | 
-| Two chargers far apart (d=15) | Negligible regardless of density | 
+| Two chargers far apart (d>R₄) | Zero — outside cutoff | 
 | One high-density (0.9), one empty (0.0), adjacent | Low: 0.05δ (high density justifies) |
 
 
 **QUBO placement:** Quadratic → **off-diagonal** (upper triangular, i < j):
 
-> $$Q_{ij} \mathrel{+}= \alpha_4 \left( \delta \cdot \frac{1 - \max(nw_i, nw_j)}{1 + d(i, j)} \right)$$
+> $$Q_{ij} \mathrel{+}= \alpha_4 \left( \delta \cdot \frac{1 - \max(nw_i, nw_j)}{1 + d(i, j)} \right) \qquad \text{for } d(i,j) \leq R_4$$
 
 ---
 
@@ -428,7 +436,7 @@ $$H_4 = + \sum_{i}\sum_{j>i} x_i x_j \delta \frac{1- \max(nw_i, nw_j)}{1 + d(i, 
 
 $$H_5 = \lambda (\sum_i x_i - m)^2$$
 
-**What it does:** Forces the solution to place exactly `m` new chargers
+**What it does:** Forces the solution to place exactly `m` new chargers.
 
 **Why designed this way:**
 
@@ -449,25 +457,33 @@ $$= \lambda \sum_i (1-2m) x_i + 2\lambda \sum_{i < j} x_i x_j + \lambda m^2$$
 
 
 Which gives:
-  - Diagonal: `λ(1 - 2m)` per cell(negative for m ≥ 1). It rewards selecting cells individually
+  - Diagonal: `λ(1 - 2m)` per cell (negative for m ≥ 1). It rewards selecting cells individually
   - Off-diagonal: `2λ` per pair. This penalizes every pair of selected cells, counterbalancing the diagonal reward
   - Constant: `λm²`. Doesn't affect optimization, can be ignored
-. 
+
 **Important: The off-diagonal coefficient is `2λ`, not `λ`.** This comes from the fact that `(Σ x_i)²` produces `Σ_{i≠j} x_i x_j`, which when converted to upper triangular form (i < j only) doubles the coefficient. Getting this wrong would make the constraint only half as strong on pairwise terms, potentially allowing the optimizer to select too many or too few chargers.
 
 - The **`λ` value** must be chosen carefully. Too small: the optimizer violates the constraint. Too large: it dominates the objective and the optimizer ignores placement quality. A common heuristic is to set `λ` to be ~2-5× the magnitude of the largest other term.
 
+**H5 storage strategy — not stored in Q:**
+
+H5's `2λ` off-diagonal term applies to every pair, which would destroy the sparsity gained from local radii. Instead:
+
+- **GA:** Skips H5 entirely. GA individuals always have exactly `m` chargers by encoding, so H5 = 0 always. The GA evaluates fitness using only the sparse objective terms (H1–H4, H6).
+- **QAOA (standard mixer):** H5 is applied as a separate Hamiltonian term during cost Hamiltonian construction, not stored in Q.
+- **QAOA (XY-mixer, future):** A Hamming-weight preserving mixer restricts the search to states with exactly `m` ones, eliminating H5 entirely.
+
 **Verification:**
 
-| Chargers selected | H5 value | Penality |
-|-------------------|----------|----------|
+| Chargers selected | H5 value | Penalty |
+|-------------------|----------|---------|
 | Exactly m | λ × 0 = 0 | ✓ No penalty |
 | m + 1 | λ × 1 = λ | ✓ Penalty |
 | m - 1 | λ × 1 = λ | ✓ Penalty |
 | m + 2 | λ × 4 = 4λ | ✓ Quadratically increasing |
 
 
-**QUBO placement:** Both **diagonal and off-diagonal**:
+**QUBO placement:** Both **diagonal and off-diagonal** (applied separately, not stored in sparse Q):
 
 > $$Q_{ii} \mathrel{+}= \alpha_5 \cdot \lambda \cdot (1 - 2m)$$
 
@@ -477,7 +493,7 @@ Which gives:
 
 ### Objective Term H6 — Coverage Redundancy (Minimize → Don't Waste Chargers on Same Cluster)
 
-$$H_6 = + \sum_i \sum_{j>i} x_i x_j \varepsilon \sum_{c \in C_{POI}, d(i,c) \leq R, d(j,c) \leq R} \frac {w_c}{(1+d(i,c))(1+d(j,c))}$$
+$$H_6 = + \sum_i \sum_{j>i} x_i x_j \varepsilon \sum_{\substack{c \in C_{POI} \\ d(i,c) \leq R_6 \\ d(j,c) \leq R_6}} \frac {w_c}{(1+d(i,c))(1+d(j,c))}$$
 
 **What it does:** Penalizes placing two new chargers such that they both serve the same POI cluster, wasting coverage.
 
@@ -499,7 +515,7 @@ H6 catches the second case that H4 misses entirely, and avoids the false positiv
 
 - **`w_c` weighting** means redundancy near high-weight POIs is penalized more (a bigger waste of resources than redundancy near low-weight POIs).
 
-- **Distance cutoff `R`:** The sum only includes POI cells where BOTH chargers are within `R` cells. Without this cutoff, every pair of chargers would accumulate small penalty contributions from all POI cells across the entire grid, creating background noise that acts as a general "don't place any two chargers" penalty — which is not the intent. The cutoff keeps H6 focused on actual service redundancy. Only POI cells that a charger can realistically "serve" (within R cells) are considered. Default R = 3-4 cells; tunable.
+- **Distance cutoff R₆:** The sum only includes POI cells where BOTH chargers are within R₆ cells. Without this cutoff, every pair of chargers would accumulate small penalty contributions from all POI cells across the entire grid, creating background noise that acts as a general "don't place any two chargers" penalty — which is not the intent. The cutoff keeps H6 focused on actual service redundancy. Default R₆ = 3-4 cells; tunable.
 
 - `ε` is the **redundancy penalty factor** — controls how strongly we penalize coverage overlap.
 
@@ -509,13 +525,12 @@ H6 catches the second case that H4 misses entirely, and avoids the false positiv
 |----------|----------|----------|
 | Charger i at POI cell c (d=0), charger j adjacent to c (d=1) | Penalty: ε × w_c / (1×2) = ε×w_c/2 | ✓ High penalty |
 | Charger i near cluster A (d=1), charger j near different cluster B (d=1), clusters far apart | Cluster A terms: small (j far from A). Cluster B terms: small (i far from B). Total: ~0 | ✓ No penalty |
-| Both chargers at d=3 from same POI, R=3 | ε × w_c / (4×4) = ε×w_c/16 | ✓ Moderate penalty |
-| Both chargers at d=3 from same POI, R=2 | Not included (d > R) → 0 | ✓ Cutoff works |
+| Both chargers at d=3 from same POI, R₆=3 | ε × w_c / (4×4) = ε×w_c/16 | ✓ Moderate penalty |
+| Both chargers at d=3 from same POI, R₆=2 | Not included (d > R₆) → 0 | ✓ Cutoff works |
 
 **QUBO placement:** Quadratic → **off-diagonal** (upper triangular, i < j):
 
-
-> $$Q_{ij} += α₆ × ( \varepsilon \sum_{c \in C_{POI}, d(i,c) \leq R, d(j,c) \leq R} \frac {w_c}{(1+d(i,c))(1+d(j,c))} )$$
+> $$Q_{ij} \mathrel{+}= \alpha_6 \left( \varepsilon \sum_{\substack{c \in C_{POI} \\ d(i,c) \leq R_6 \\ d(j,c) \leq R_6}} \frac {w_c}{(1+d(i,c))(1+d(j,c))} \right)$$
 
 ---
 
@@ -529,19 +544,21 @@ $$H_{final} = \alpha_1 H_1 + \alpha_2 H_2 + \alpha_3 H_3 + \alpha_4 H_4 + \alpha
 
 **DIAGONAL** ($Q_{ii}$) — encodes single-cell properties:
 
-> $$Q_{ii} = \alpha_1 \left( -\sum_{c \in C_{POI}} \frac{w_c \cdot s_c}{1 + d(i,c)} \right) + \alpha_2 \left( -\beta \cdot g_i \right) + \alpha_3 \left( \gamma (1-nw_i) \sum_{e \in E_{all}} \frac{1}{1+d(i,e)} \right) + \alpha_5 \cdot \lambda (1 - 2m)$$
+> $$Q_{ii} = \alpha_1 \left( -\sum_{\substack{c \in C_{POI} \\ d(i,c) \leq R_1}} \frac{w_c \cdot s_c}{1 + d(i,c)} \right) + \alpha_2 \left( -\beta \cdot g_i \right) + \alpha_3 \left( \gamma (1-nw_i) \sum_{\substack{e \in E_{all} \\ d(i,e) \leq R_3}} \frac{1}{1+d(i,e)} \right) + \alpha_5 \cdot \lambda (1 - 2m)$$
 
-where $s_c = \frac{1}{1 + \sum_{e \in E_{all}} \frac{1}{1+d(c,e)}}$ is a precomputed constant.
+where $s_c = \frac{1}{1 + \sum_{\substack{e \in E_{all} \\ d(c,e) \leq R_s}} \frac{1}{1+d(c,e)}}$ is a precomputed constant.
 
 **OFF-DIAGONAL** ($Q_{ij}$, $i < j$) — encodes pairwise interactions:
 
-> $$Q_{ij} = \alpha_4 \left( \delta \cdot \frac{1 - \max(nw_i, nw_j)}{1 + d(i,j)} \right) + \alpha_5 \cdot 2\lambda + \alpha_6 \left( \varepsilon \sum_{\substack{c \in C_{POI} \\ d(i,c) \leq R \\ d(j,c) \leq R}} \frac{w_c}{(1+d(i,c))(1+d(j,c))} \right)$$
+> $$Q_{ij} = \alpha_4 \left( \delta \cdot \frac{1 - \max(nw_i, nw_j)}{1 + d(i,j)} \right) + \alpha_6 \left( \varepsilon \sum_{\substack{c \in C_{POI} \\ d(i,c) \leq R_6 \\ d(j,c) \leq R_6}} \frac{w_c}{(1+d(i,c))(1+d(j,c))} \right) \qquad \text{for } d(i,j) \leq \max(R_4, 2R_6)$$
+
+Note: H5 (`α₅ · 2λ`) is **not stored** in the sparse Q matrix. For QAOA it is applied as a separate Hamiltonian term. For the GA it is skipped entirely (always evaluates to 0).
 
 <!-- 
 | Algorithm | How it uses Q |
 |-----------|--------------|
-| **QAOA** | Q is converted to a cost Hamiltonian (Ising model). QAOA circuit parameters are optimized to find x that minimizes x^T Q x. Multiple shots yield multiple candidate solutions. |
-| **GA** | Given an individual [42, 117, 203], convert to binary vector x, compute fitness = x^T Q x. Lower value = better individual. Standard GA operators (selection, crossover, mutation) evolve the population toward lower fitness. | -->
+| **QAOA** | Sparse Q^obj (H1-H4, H6) is converted to a cost Hamiltonian. H5 penalty is added as a separate Hamiltonian term (not stored in Q). QAOA circuit parameters are optimized to minimize the total. Multiple shots yield multiple candidate solutions. Future: XY-mixer eliminates H5 entirely. |
+| **GA** | Given an individual [42, 117, 203], convert to binary vector x, compute fitness using only Q^obj (sparse). H5 is skipped entirely — GA encoding guarantees exactly m chargers, so H5 always evaluates to 0. Lower fitness = better individual. | -->
 
 ### Verification
 
@@ -565,16 +582,17 @@ Every design requirement and identified edge case is handled by at least one ter
 
 ---
 
-<!-- ### 6.12 Implementation Notes
+<!-- ### Implementation Notes
 
-**Q matrix sparsity:** For large grids (N = 1024), the full Q matrix has ~500K off-diagonal entries. However, H4 and H6 contributions decay with distance, so entries where `d(i,j) > R` (or a similar threshold) can be set to zero. Only the H5 off-diagonal term (`2λ`) applies to all pairs. In practice, the Q matrix can be stored as a sparse matrix with the H5 constant added implicitly during evaluation. -->
+**Q matrix sparsity:** All terms use local radii, making Q grid-local sparse. H5 is not stored in Q — GA skips it, QAOA applies it separately. -->
 
 <!-- **Precomputation:** The following values should be computed once from grid data before building Q:
 - `w_c` for all cells (Section 4.3 aggregation + scaling)
 - `nw_c = w_c / scale_factor` for all cells
-- `s_c` for all POI cells (service gap factor)
-- `g_i` for all cells (gas station presence)
-- Pairwise Chebyshev distances (or compute on-the-fly with distance cutoff) -->
+- `s_c` for all POI cells (service gap factor, summing over chargers in E_all within Rₛ)
+- `g_i` for all cells (gas station count)
+- Neighbor lists per cell for each radius (R₁, R₃, R₄, R₆) -->
+
 ### Tunable Parameters Summary
 
 | Parameter | Role | Default | Tuning Guide |
@@ -590,11 +608,17 @@ Every design requirement and identified edge case is handled by at least one ter
 | `δ` | New charger spacing magnitude | TBD | Controls new charger mutual repulsion. Too high → forces spread even in areas that need clustering |
 | `ε` | Coverage redundancy magnitude | TBD | Controls overlap penalty. Too high → prevents multiple chargers per cluster even when demand justifies it |
 | `λ` | Constraint penalty multiplier | TBD | Heuristic: ~2-5× largest other term. Too low → wrong number of chargers. Too high → dominates and flattens objective |
-| `R` | Service radius for H6 cutoff | 3-4 cells | Defines "serving the same area". Larger R → stricter redundancy check over wider area |
+| `R₁` | H1 attraction radius | 5-6 cells | How far chargers "see" POIs. Should be largest radius. Too small → chargers only placed directly on POIs |
+| `Rₛ` | Service gap radius for s_c | 5-6 cells | Should match R₁ for consistency. Controls how far existing chargers reduce POI attraction |
+| `R₃` | H3 existing charger penalty radius | 4-5 cells | How far existing chargers repel new ones. Smaller than R₁ |
+| `R₄` | H4 new charger spacing radius | 4-5 cells | How far new chargers repel each other. Major impact on Q sparsity |
+| `R₆` | H6 coverage redundancy radius | 3-4 cells | Defines "serving the same area". Smallest radius — tightest locality |
 | `scale_factor` | Cell weight scaling | 5 | Controls weight differentiation. Increase → bigger gap between dense and sparse cells |
 | `min_weight` | Cell weight floor | 0.5 | Floor for lowest-density cells with POIs. Increase → sparse areas stay more relevant |
 
 Note: `α` parameters and `β, γ, δ, ε` are technically redundant (e.g., `α₂ × β` could be a single parameter). They are kept separate for clarity — `α` values control the relative importance between objectives, while `β, γ, δ, ε` control magnitudes within each objective. During tuning, some may be collapsed.
+
+Each term's raw contributions are **normalized** (divided by max absolute value across the grid) before applying `α` weights, so that `α₁ = 2, α₃ = 1` genuinely means "POI attraction is twice as important as existing charger penalty" regardless of dataset.
 
 <!-- ### Known Limitation — The min() Problem
 
@@ -674,7 +698,7 @@ We will generate synthetic city-like datasets since real-world data may be hard 
 
 ### Target Scale
 Ballpark for a realistic mid-size city:
-- 50–200 POIs across all tiers
+- 50–200 POIs with varying population densities
 - 10–30 existing charging stations
 - 20–50 gas stations
 - 5–20 new stations to place
@@ -742,11 +766,12 @@ Exact numbers to be calibrated during development.
 ### Step 7: Scaling & Optimization
 - Test on larger datasets
 - Tune hyperparameters
-- Explore alternative integration approaches (B, C) -->
+- Explore alternative integration approaches (B, C)
+- Explore constrained mixers for QAOA to eliminate H5 -->
 
 ---
 
-## 13. Open Items (To Be Resolved During Development)
+## Open Items (To Be Resolved During Development)
 
 | Item | Status |
 |------|--------|
@@ -754,26 +779,31 @@ Exact numbers to be calibrated during development.
 | Crossover and mutation strategies | Papers to review, then decide |
 | Specific QAOA circuit design and parameter optimization | To be designed in Step 3 |
 | Paper's scoring metric integration | To be addressed when relevant |
-| QUBO α weights (`α₁` through `α₅`) | To be tuned experimentally |
+| QUBO α weights (`α₁` through `α₆`) | To be tuned experimentally |
 | Gas station bonus magnitude (`β`) | To be tuned experimentally |
 | Existing charger penalty magnitude (`γ`) | To be tuned experimentally |
 | New charger spacing magnitude (`δ`) | To be tuned experimentally |
+| Coverage redundancy magnitude (`ε`) | To be tuned experimentally |
 | Constraint penalty multiplier (`λ`) | Heuristic: ~2-5× largest other term |
+| Local radii (`R₁, Rₛ, R₃, R₄, R₆`) | Defaults set, to be tuned experimentally |
 | `scale_factor` for cell weighting | Default: 5, to be tuned experimentally |
 | `min_weight` floor for cell weighting | Default: 0.5, to be tuned experimentally |
+| Constrained mixers for QAOA | To explore in Step 7 if H5 causes performance issues |
 
 ---
 
-## 14. Key Innovations Over the Reference Paper
+## Key Innovations Over the Reference Paper
 
 1. **Grid-based discretization tied to qubit count** — scalable and practical
-2. **Continuous density-based cell weighting** — eliminates arbitrary tier boundaries, adapts automatically to grid resolution changes, and preserves full granularity of the density distribution (see Section 4.2 for detailed rationale vs. discrete tiers)
-3. **Unified QUBO formulation for both QAOA and GA** — same Q matrix drives both algorithms, enabling fair comparison and consistent optimization landscape (see Section 6.1)
+2. **Continuous density-based cell weighting** — eliminates arbitrary tier boundaries, adapts automatically to grid resolution changes, and preserves full granularity of the density distribution
+3. **Unified QUBO formulation for both QAOA and GA** — same Q matrix drives both algorithms, enabling fair comparison and consistent optimization landscape
 4. **Smooth charger clustering penalty** — inversely scaled by cell weight, allowing clustering in high-demand areas and penalizing in low-demand areas with no arbitrary cutoffs
-5. **Gas station co-location bonus** — leverages existing infrastructure as a soft incentive
+5. **Gas station co-location bonus** — leverages existing infrastructure as a soft incentive, scales with gas station count
 6. **Flexible output (shortlist > n)** — gives planners practical decision support
 7. **Chebyshev grid distance** — simpler and more intuitive than Euclidean for zonal planning
+8. **Local radii for Q matrix sparsity** — every term uses distance cutoffs, H5 stored separately, making Q grid-local sparse
+9. **Saturation-aware repulsion** — existing charger penalty and service gap factor sum over individual chargers, not cells, naturally handling multi-charger saturation
 
 ---
 
-*Document Version: 1.6 — February 18, 2026*
+*Document Version: 1.7 — March 10, 2026*
