@@ -725,6 +725,26 @@ def suggest_parameters(grid_details: Dict, cell_weights: Dict, plot_deets: Dict,
     else:
         alpha_6 = round(0.5 * (n_clusters / m), 3)
 
+    # ── MAGNITUDE CAP: H4 and H6 are NOT normalized before α (unlike H1/H2/H3).
+    # After normalization, H1 diagonal is bounded to [-α₁, 0].
+    # H4 effective peak = α₄ × h4_max (raw, no normalization divisor).
+    # H6 effective peak = α₆ × h6_max (raw, no normalization divisor).
+    # Target: H4 and H6 peaks ≤ 50% of α₁ (tiebreakers, not dominant).
+    # This is a pre-build estimate — calibrate_alphas() in qubo_builder.py
+    # does a post-build correction using actual Q_obj values.
+    TARGET_OFFDIAG_FRACTION = 0.5
+    target_offdiag_peak = TARGET_OFFDIAG_FRACTION * alpha_1  # 0.5 × 3.0 = 1.5
+
+    if h4_max > 0:
+        alpha_4_capped = target_offdiag_peak / h4_max
+        if alpha_4_capped < alpha_4:
+            alpha_4 = round(alpha_4_capped, 4)
+
+    if h6_max > 0:
+        alpha_6_capped = target_offdiag_peak / h6_max
+        if alpha_6_capped < alpha_6:
+            alpha_6 = round(alpha_6_capped, 4)
+
     # ── Step 5: λ (constraint penalty) ───────────────────────────────────────
     # Must make violating Σx_i = m more expensive than any objective gain.
     # After normalization, best diagonal gain per charger ≈ α₁ + α₂.
@@ -761,6 +781,23 @@ def suggest_parameters(grid_details: Dict, cell_weights: Dict, plot_deets: Dict,
             f"Detected {n_clusters} POI cluster(s), m={m} → {rel} chargers than clusters"
             f" → α₄ = {alpha_4}, α₆ = {alpha_6}"
         )
+
+    # Note when magnitude cap overrode cluster-logic defaults
+    if h4_max > 0 and alpha_4 < (1.5 if (n_clusters == 0 or m <= n_clusters) else 0.5):
+        notes.append(
+            f"α₄ magnitude-capped: H4 raw peak={h4_max:.3f} would dominate at cluster-logic "
+            f"default — reduced to α₄={alpha_4} so H4 peak ≤ {target_offdiag_peak:.2f} (50% of α₁)"
+        )
+
+    if h6_max > 0:
+        cluster_default_a6 = (0.5 if n_clusters == 0
+                              else 1.5 if m <= n_clusters
+                              else round(0.5 * (n_clusters / m), 3))
+        if alpha_6 < cluster_default_a6:
+            notes.append(
+                f"α₆ magnitude-capped: H6 raw peak={h6_max:.3f} would dominate at cluster-logic "
+                f"default — reduced to α₆={alpha_6} so H6 peak ≤ {target_offdiag_peak:.2f} (50% of α₁)"
+            )
 
     if max_gas_count > 0:
         proximity = "near" if gas_poi_overlap > 0.3 else "mostly away from"
@@ -839,7 +876,6 @@ def print_parameter_suggestions(params: Dict) -> None:
     """
     SEP = "=" * 62
 
-    print(f"\n{SEP}")
     print("SUGGESTED PARAMETERS")
     print(SEP)
 
