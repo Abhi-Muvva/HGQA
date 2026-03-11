@@ -39,15 +39,18 @@ A ranked shortlist of candidate grid locations (more than `n`, to give decision-
 - Output is a grid region, not an exact coordinate, which is more practical for planners
 
 ### Grid Construction
-The entire geographic area is divided into a grid of **2^q** cells, where `q` is the number of qubits available. Each grid cell is assigned a unique ID from `0` to `2^q - 1`.
+The entire geographic area is divided into a grid of **N** cells, where `N` equals the number of physical qubits available. Each qubit corresponds to exactly one grid cell — one binary variable in the QUBO. Each grid cell is assigned a unique ID from `0` to `N - 1`.
 
-- For `q = 8` qubits → 256 grid cells (default: 16×16)
-- For `q = 10` qubits → 1024 grid cells (default: 32×32)
+- For `N = 16` qubits → 16 grid cells (default: 4×4)
+- For `N = 25` qubits → 25 grid cells (default: 5×5)
+- For `N = 20` qubits → 20 grid cells (default: 4×5)
+
+**Constraint — N must be composite (not prime):** A prime number of qubits can only be arranged as a 1×N strip, which is not a useful geographic grid. N must have at least two factors greater than 1 so it can be laid out as a proper rows×cols rectangle. Valid examples: 4, 6, 8, 9, 10, 12, 14, 15, 16, 18, 20, 21, 24, 25. Invalid examples: 2, 3, 5, 7, 11, 13, 17, 19, 23. The code enforces this at construction time and raises an error if a prime N is passed.
 
 ### Grid Layout Options
 The grid layout is configurable:
-- **Default:** Attempts the closest square grid (e.g., 16×16 for 256 cells)
-- **Show mode:** Displays all possible rectangular layouts (e.g., 256 = 16×16, 32×8, 64×4, etc.) and lets the user pick one
+- **Default:** Attempts the closest square grid (e.g., 4×4 for N=16, 5×5 for N=25). For non-square composites, picks the most square-like rectangle (e.g., 4×5 for N=20).
+- **Show mode:** Displays all possible rectangular layouts (e.g., N=20 → 4×5, 2×10) and lets the user pick one
 
 ### Distance Metric
 **Chebyshev distance** between grid cells:
@@ -137,7 +140,7 @@ After gridding and weight calculation, each cell contains:
 
 | Field | Description |
 |-------|-------------|
-| Grid ID | Unique identifier (0 to 2^q - 1) |
+| Grid ID | Unique identifier (0 to N − 1) |
 | Number of POIs | Count of POIs in this cell |
 | Raw Density Score | Sum of population densities of POIs in this cell |
 | Normalized Score | Raw score / max raw score across all cells |
@@ -154,11 +157,13 @@ After gridding and weight calculation, each cell contains:
 ```
 Raw Data (POIs with densities, chargers, gas stations)
         ↓
-Grid Discretization (2^q cells, configurable layout)
+Grid Discretization (N cells where N = number of qubits, composite N required)
         ↓
 Aggregate densities per cell → Normalize → Scale (linear with floor)
         ↓
 Grid Data Table (summary per cell with continuous weights)
+        ↓
+Suggest QUBO Parameters (α weights, radii, λ — data-driven starting point)
 ```
 
 ### Phase 2: Quantum Optimization (QAOA via Qiskit)
@@ -222,7 +227,7 @@ Where `x` is a vector of binary variables and `Q` is an upper triangular matrix 
 
 ### Binary Variables
 
-We define `N = 2^q` binary variables, one for each grid cell:
+We define `N` binary variables, one for each grid cell, where `N` is the number of physical qubits:
 
 ```
 x_i = 1  if a new charger is placed in grid cell i
@@ -238,7 +243,7 @@ Before defining the objective terms, here is the notation used throughout:
 
 | Symbol | Meaning |
 |--------|---------|
-| `N` | Total number of grid cells (= 2^q) |
+| `N` | Total number of grid cells (= number of physical qubits, must be composite) |
 | `m` | Number of new chargers to place |
 | `x_i` | Binary variable: 1 if charger placed in cell i, 0 otherwise |
 | `w_c` | Cell weight of cell c (from Section 4.3, continuous, 0 to scale_factor) |
@@ -248,11 +253,11 @@ Before defining the objective terms, here is the notation used throughout:
 | `E_all` | Set of all individual existing chargers (not cells — a cell with 3 chargers contributes 3 entries) |
 | `g_i` | Number of gas stations in cell i (0, 1, 2, ...) |
 | `s_c` | Service gap factor for POI cell c (how underserved it is by existing chargers) |
-| `R₁` | H1 attraction radius — only POIs within R₁ of cell i contribute (default ~5-6 cells) |
-| `Rₛ` | Service gap radius — only existing chargers within Rₛ of POI cell c contribute to s_c (default ~5-6 cells, matches R₁) |
-| `R₃` | H3 penalty radius — only existing chargers within R₃ of cell i contribute (default ~4-5 cells) |
-| `R₄` | H4 spacing radius — only pairs with d(i,j) ≤ R₄ get spacing penalty (default ~4-5 cells) |
-| `R₆` | H6 redundancy radius — only POIs within R₆ of BOTH chargers contribute (default ~3-4 cells) |
+| `R₁` | H1 attraction radius — only POIs within R₁ of cell i contribute (default: 30% of grid side, min 2) |
+| `Rₛ` | Service gap radius — only existing chargers within Rₛ of POI cell c contribute to s_c (default: = R₁) |
+| `R₃` | H3 penalty radius — only existing chargers within R₃ of cell i contribute (default: 20% of grid side − 1, min 2) |
+| `R₄` | H4 spacing radius — only pairs with d(i,j) ≤ R₄ get spacing penalty (default: 20% of grid side, min 2) |
+| `R₆` | H6 redundancy radius — only POIs within R₆ of BOTH chargers contribute (default: 15% of grid side, min 2) |
 
 ---
 
@@ -515,7 +520,7 @@ H6 catches the second case that H4 misses entirely, and avoids the false positiv
 
 - **`w_c` weighting** means redundancy near high-weight POIs is penalized more (a bigger waste of resources than redundancy near low-weight POIs).
 
-- **Distance cutoff R₆:** The sum only includes POI cells where BOTH chargers are within R₆ cells. Without this cutoff, every pair of chargers would accumulate small penalty contributions from all POI cells across the entire grid, creating background noise that acts as a general "don't place any two chargers" penalty — which is not the intent. The cutoff keeps H6 focused on actual service redundancy. Default R₆ = 3-4 cells; tunable.
+- **Distance cutoff R₆:** The sum only includes POI cells where BOTH chargers are within R₆ cells. Without this cutoff, every pair of chargers would accumulate small penalty contributions from all POI cells across the entire grid, creating background noise that acts as a general "don't place any two chargers" penalty — which is not the intent. The cutoff keeps H6 focused on actual service redundancy. Default R₆ = 15% of grid side (min 2); tunable.
 
 - `ε` is the **redundancy penalty factor** — controls how strongly we penalize coverage overlap.
 
@@ -595,26 +600,30 @@ Every design requirement and identified edge case is handled by at least one ter
 
 ### Tunable Parameters Summary
 
+All α weights, radii, and λ have data-driven starting values computed by `suggest_parameters`. The defaults below reflect those formulas; all values are overridable.
+
 | Parameter | Role | Default | Tuning Guide |
 |-----------|------|---------|-------------|
-| `α₁` | Weight of H1 (POI attraction) | TBD | Primary driver — should be dominant. Increase to pull chargers closer to dense POIs |
-| `α₂` | Weight of H2 (gas station bonus) | TBD | Meaningful but not dominant. Increase for stronger gas station preference |
-| `α₃` | Weight of H3 (existing charger penalty) | TBD | Moderate influence. Decrease to allow more tolerance for placing near existing chargers |
-| `α₄` | Weight of H4 (new charger spacing) | TBD | Moderate influence. Decrease to allow charger clustering in dense areas |
-| `α₅` | Weight of H5 (charger count constraint) | TBD | Must enforce constraint. Should always be high enough that violating Σx=m is never worth it |
-| `α₆` | Weight of H6 (coverage redundancy) | TBD | Moderate influence. Decrease when m is large relative to number of POI clusters (need multiple chargers per cluster). Increase for strict maximum coverage spread |
-| `β` | Gas station bonus magnitude | TBD | Controls gas station attraction. Too high → forces chargers onto gas stations ignoring POIs |
-| `γ` | Existing charger penalty magnitude | TBD | Controls existing charger repulsion. Too high → avoids existing chargers even when area needs more |
-| `δ` | New charger spacing magnitude | TBD | Controls new charger mutual repulsion. Too high → forces spread even in areas that need clustering |
-| `ε` | Coverage redundancy magnitude | TBD | Controls overlap penalty. Too high → prevents multiple chargers per cluster even when demand justifies it |
-| `λ` | Constraint penalty multiplier | TBD | Heuristic: ~2-5× largest other term. Too low → wrong number of chargers. Too high → dominates and flattens objective |
-| `R₁` | H1 attraction radius | 5-6 cells | How far chargers "see" POIs. Should be largest radius. Too small → chargers only placed directly on POIs |
-| `Rₛ` | Service gap radius for s_c | 5-6 cells | Should match R₁ for consistency. Controls how far existing chargers reduce POI attraction |
-| `R₃` | H3 existing charger penalty radius | 4-5 cells | How far existing chargers repel new ones. Smaller than R₁ |
-| `R₄` | H4 new charger spacing radius | 4-5 cells | How far new chargers repel each other. Major impact on Q sparsity |
-| `R₆` | H6 coverage redundancy radius | 3-4 cells | Defines "serving the same area". Smallest radius — tightest locality |
+| `α₁` | Weight of H1 (POI attraction) | 3.0 | Primary driver — should be dominant. Increase to pull chargers closer to dense POIs |
+| `α₂` | Weight of H2 (gas station bonus) | 0.5–1.0 (reduced if gas stations are far from dense POIs) | Meaningful but not dominant. Increase for stronger gas station preference |
+| `α₃` | Weight of H3 (existing charger penalty) | 1.0–2.0 (increased when existing coverage is sparse) | Moderate influence. Decrease to allow more tolerance for placing near existing chargers |
+| `α₄` | Weight of H4 (new charger spacing) | 1.0–1.5 (increased when POI clusters ≥ m) | Moderate influence. Decrease to allow charger clustering in dense areas |
+| `α₅` | Weight of H5 (charger count constraint) | 1.0 | Must enforce constraint. Should always be high enough that violating Σx=m is never worth it |
+| `α₆` | Weight of H6 (coverage redundancy) | 1.0–1.5 (increased when POI clusters ≥ m) | Moderate influence. Decrease when m is large relative to number of POI clusters (need multiple chargers per cluster). Increase for strict maximum coverage spread |
+| `β` | Gas station bonus magnitude | 1.0 | Controls gas station attraction. Too high → forces chargers onto gas stations ignoring POIs |
+| `γ` | Existing charger penalty magnitude | 1.0 | Controls existing charger repulsion. Too high → avoids existing chargers even when area needs more |
+| `δ` | New charger spacing magnitude | 1.0 | Controls new charger mutual repulsion. Too high → forces spread even in areas that need clustering |
+| `ε` | Coverage redundancy magnitude | 1.0 | Controls overlap penalty. Too high → prevents multiple chargers per cluster even when demand justifies it |
+| `λ` | Constraint penalty multiplier | 5 × (α₁ + α₂) × m | 5× safety margin over max objective gain. Too low → wrong number of chargers. Too high → dominates and flattens objective |
+| `R₁` | H1 attraction radius | 30% of grid side, min 2 | Largest radius — how far chargers "see" POIs. Too small → chargers placed only directly on POIs |
+| `Rₛ` | Service gap radius for s_c | = R₁ | Always matches R₁ for consistency. Controls how far existing chargers reduce POI attraction |
+| `R₃` | H3 existing charger penalty radius | 20% of grid side − 1, min 2 | How far existing chargers repel new ones. Must be < R₁ |
+| `R₄` | H4 new charger spacing radius | 20% of grid side, min 2 | How far new chargers repel each other. Must be > R₃. Major impact on Q sparsity |
+| `R₆` | H6 coverage redundancy radius | 15% of grid side, min 2 | Smallest radius — defines "serving the same area". Must be ≤ R₃ |
 | `scale_factor` | Cell weight scaling | 5 | Controls weight differentiation. Increase → bigger gap between dense and sparse cells |
 | `min_weight` | Cell weight floor | 0.5 | Floor for lowest-density cells with POIs. Increase → sparse areas stay more relevant |
+
+Ordering constraint enforced by `suggest_parameters`: **R₁ ≥ R₄ > R₃ ≥ R₆**. Violating this degrades Q sparsity and makes terms interact incorrectly.
 
 Note: `α` parameters and `β, γ, δ, ε` are technically redundant (e.g., `α₂ × β` could be a single parameter). They are kept separate for clarity — `α` values control the relative importance between objectives, while `β, γ, δ, ε` control magnitudes within each objective. During tuning, some may be collapsed.
 
@@ -630,19 +639,64 @@ If needed, the GA can optionally use a richer non-QUBO fitness function (with ac
 
 ---
 
+## Automated Parameter Suggestion
+
+Before running optimization, the pipeline automatically computes a data-driven starting point for all QUBO parameters. This is implemented in `suggest_parameters(grid_details, cell_weights, plot_deets, m)` and runs after grid construction and weight calculation, before Q matrix construction.
+
+### What It Computes
+
+**Radii** — derived as fractions of the grid side length, with the ordering constraint R₁ ≥ R₄ > R₃ ≥ R₆ enforced:
+
+| Radius | Formula | Purpose |
+|--------|---------|---------|
+| `R₁` | 30% of grid side, min 2 | H1 POI attraction reach |
+| `Rₛ` | = R₁ | Service gap radius, matches R₁ for consistency |
+| `R₃` | 20% of grid side − 1, min 2 | H3 existing charger repulsion reach |
+| `R₄` | 20% of grid side, min 2 | H4 new charger spacing reach |
+| `R₆` | 15% of grid side, min 2 | H6 coverage redundancy reach |
+
+**α weights** — set by magnitude-matching: each α is chosen so that its term contributes at a comparable scale to α₁ H₁ (the dominant term). Additional adjustments are made based on data diagnostics:
+
+- `α₁ = 3.0` always (dominant driver)
+- `α₂` reduced if gas stations are mostly away from high-density POI areas
+- `α₃` increased if existing coverage is sparse (high average service gap `s_c`)
+- `α₄`, `α₆` increased if the number of detected POI clusters ≥ m (spread matters more)
+
+**λ** — set to `5 × (α₁ + α₂) × m`, giving a 5× safety margin over the maximum possible objective gain from placing m chargers. This ensures the constraint H5 always dominates any benefit from violating Σx = m.
+
+**Intra-term magnitudes** — β, γ, δ, ε all default to 1.0. These are effectively absorbed by the α weights after per-term normalization and are left for manual tuning.
+
+### Output
+
+`suggest_parameters` returns a dict with four keys:
+
+```python
+{
+  'radii':       {'R1': int, 'Rs': int, 'R3': int, 'R4': int, 'R6': int},
+  'alpha':       {'a1': float, 'a2': float, 'a3': float, 'a4': float, 'a5': float, 'a6': float},
+  'intra':       {'beta': float, 'gamma': float, 'delta': float, 'epsilon': float},
+  'lambda':      float,
+  '_magnitudes': {...},   # raw term magnitudes before α, for inspection
+  '_diagnostics': {...},  # n_clusters, avg_service_gap, gas_poi_overlap, etc.
+}
+```
+
+All values are overridable — the suggestion is a calibrated starting point, not a constraint. `print_parameter_suggestions(params)` prints a formatted summary with the diagnostic notes explaining each choice.
+
+---
+
 ## Output Specification
 
 ### Number of Output Grid IDs
 The algorithm outputs more candidate grids than the number of new stations needed:
 
 ```
-num_output = n + f(q)
+num_output = n + BUFFER
 ```
 
-Where `n` = number of new stations to place, `q` = number of qubits, and `f(q)` is a function we will calibrate (initial trial: `f(q) = q/3`).
+Where `n` = number of new stations to place and `BUFFER` is a small fixed integer (default: 3). This gives planners a shortlist with flexibility — not every grid location may be feasible in practice, and the next-best options are immediately available without re-running the algorithm.
 
-This gives planners a shortlist with flexibility, since not every grid location may be feasible in practice.
-
+The buffer is fixed for now.
 ### Output Format
 A ranked list of grid IDs with their fitness scores, showing why each was selected (proximity to which POIs, gas station presence, etc.).
 
@@ -740,7 +794,7 @@ Exact numbers to be calibrated during development.
 - Configurable parameters (city size, density distribution, etc.)
 
 ### Step 2: Grid Discretization Module
-- Flexible 2^q gridding with layout options
+- Flexible N-cell gridding with layout options (N = number of qubits, composite required)
 - Grid data table construction
 - Chebyshev distance computation utilities
 
@@ -775,7 +829,7 @@ Exact numbers to be calibrated during development.
 
 | Item | Status |
 |------|--------|
-| Exact formula for output candidate count (`n + f(q)`) | Trial: `f(q) = q/3`, to be calibrated |
+| Output candidate count (`n + BUFFER`) | Fixed buffer of 3, to be validated against user needs |
 | Crossover and mutation strategies | Papers to review, then decide |
 | Specific QAOA circuit design and parameter optimization | To be designed in Step 3 |
 | Paper's scoring metric integration | To be addressed when relevant |
@@ -794,9 +848,10 @@ Exact numbers to be calibrated during development.
 
 ## Key Innovations Over the Reference Paper
 
-1. **Grid-based discretization tied to qubit count** — scalable and practical
+1. **Direct qubit-to-cell mapping** — N grid cells = N physical qubits. Grid resolution scales exactly with available hardware. N must be composite to allow a rectangular layout; the code enforces this constraint.
 2. **Continuous density-based cell weighting** — eliminates arbitrary tier boundaries, adapts automatically to grid resolution changes, and preserves full granularity of the density distribution
-3. **Unified QUBO formulation for both QAOA and GA** — same Q matrix drives both algorithms, enabling fair comparison and consistent optimization landscape
+3. **Automated parameter suggestion** — `suggest_parameters` derives data-driven starting values for all α weights, radii, and λ from the grid data, using magnitude-matching and dataset diagnostics. Removes the need for blind manual tuning.
+4. **Unified QUBO formulation for both QAOA and GA** — same Q matrix drives both algorithms, enabling fair comparison and consistent optimization landscape
 4. **Smooth charger clustering penalty** — inversely scaled by cell weight, allowing clustering in high-demand areas and penalizing in low-demand areas with no arbitrary cutoffs
 5. **Gas station co-location bonus** — leverages existing infrastructure as a soft incentive, scales with gas station count
 6. **Flexible output (shortlist > n)** — gives planners practical decision support
@@ -806,4 +861,4 @@ Exact numbers to be calibrated during development.
 
 ---
 
-*Document Version: 1.7 — March 10, 2026*
+*Document Version: 1.8 — March 11, 2026*
