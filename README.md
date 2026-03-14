@@ -6,9 +6,11 @@
 
 ## Project Overview
 
-This project develops a hybrid quantum-classical algorithm that optimally places new electric vehicle (EV) charging stations in a city-like environment. The approach combines Quantum Approximate Optimization Algorithm (QAOA) via Qiskit with a classical Genetic Algorithm (GA) to produce high-quality placement recommendations.
+This project develops a hybrid quantum-classical algorithm that optimally places new electric vehicle (EV) charging stations in a city-like environment. The approach combines a **QUBO-based cell pruner**, the **Quantum Approximate Optimization Algorithm (QAOA)** via Qiskit, and a classical **Genetic Algorithm (GA)** to produce high-quality placement recommendations.
 
-The core idea: the quantum algorithm explores the discrete solution space to generate a strong set of candidate solutions, which then seed a classical genetic algorithm for further refinement. This hybrid approach is inspired by, and aims to improve upon, the methodology in the reference paper ([Chandra et al.](/References/TowardsanOptimalHybridAlgorithmforEVChargingStationsPlacementusingQuantumAnnealingandGeneticAlgorithms.pdf)).
+The core idea: after building a QUBO over the full grid, a cell pruner reduces the variable count by eliminating provably suboptimal cells, making the subsequent quantum optimization tractable. The quantum stage then explores the reduced combinatorial space to generate a strong set of candidate solutions, which seed the GA for final refinement. This hybrid approach is inspired by, and aims to improve upon, the methodology in the reference paper ([Chandra et al.](/References/TowardsanOptimalHybridAlgorithmforEVChargingStationsPlacementusingQuantumAnnealingandGeneticAlgorithms.pdf)).
+
+The pipeline operates across three problem-size tiers, each using the most appropriate solver; from exact brute-force on tiny instances to MPS-based QAOA simulation for proof-of-concept at medium scale.
 
 ---
 
@@ -59,6 +61,101 @@ The grid layout is configurable:
 - Two cells apart = 2, and so on
 
 This means 8-directional adjacency where moving diagonally costs the same as moving horizontally or vertically.
+
+
+---
+
+## Algorithm Pipeline
+
+### Phase 1: Data Preparation
+```
+Raw Data (POIs with densities, chargers, gas stations)
+        ↓
+Grid Discretization (N cells where N = number of qubits, composite N required)
+        ↓
+Aggregate densities per cell → Normalize → Scale (linear with floor)
+        ↓
+Grid Data Table (summary per cell with continuous weights)
+        ↓
+Suggest QUBO Parameters (α weights, radii, λ — data-driven starting point)
+```
+
+### Phase 2: QUBO-Based Cell Pruning
+```
+Q_obj (full N-cell QUBO, H1-H4 + H6)
+        |
+        v
+Tier 1: Remove zero-solo cells far from any competitive cell
+        |
+        v
+Tier 2: Bound elimination -- prune cells provably not in any optimal solution
+        |
+        v
+Tier 3: Spatial deduplication -- keep top-K per micro-cluster of near-identical cells
+        |
+        v
+Surviving cell IDs (K << N)
+        |
+        v
+Remap Q_obj keys to 0..K-1 for QAOA
+```
+
+<!-- See [QUBO-Based Cell Pruner](#qubo-based-cell-pruner) section for full details. -->
+
+### Phase 3: Quantum Optimization (QAOA via Qiskit) — Three Execution Tiers
+
+The quantum stage adapts to problem size. After pruning, K is the number of surviving cells (qubits fed to QAOA):
+
+
+
+```
+Pruned Q_obj (K variables)  +  H5 params (applied separately)
+        |
+        v
+Build cost Hamiltonian (Ising form via QUBO-to-Ising conversion)
+        |
+        v
+Run QAOA (statevector or MPS, COBYLA optimization, multiple restarts)
+        |
+        v
+Collect top-k feasible solutions (popcount = m)
+        |
+        v
+Translate qubit indices back to original cell IDs
+        |
+        v
+Candidate Grid ID Sets (initial population for GA)
+```
+
+
+### Phase 4: Classical Genetic Algorithm Refinement
+```
+Initial Population (from QAOA / brute-force output, top-k solutions)
+        |
+        v
+Evaluate Fitness using Q_obj (evaluate_solution -- same QUBO, no H5 needed)
+        |
+        v
+Selection (tournament) -> Crossover (subset swap) -> Mutation (neighbor shift)
+        |
+        v
+Repeat for G generations
+        |
+        v
+Final Ranked Shortlist of original Grid IDs
+```
+
+### Phase 5: Evaluation and Visualization
+```
+Compare: Only GA (random seed) vs Hybrid (QAOA/MPS + GA)
+        |
+        v
+Scoring metrics, convergence plots, grid visualizations
+        |
+        v
+MPS agreement check: statevector vs MPS top-3 overlap (small instances only)
+```
+
 
 ---
 
@@ -151,79 +248,11 @@ After gridding and weight calculation, each cell contains:
 
 ---
 
-## Algorithm Pipeline
-
-### Phase 1: Data Preparation
-```
-Raw Data (POIs with densities, chargers, gas stations)
-        ↓
-Grid Discretization (N cells where N = number of qubits, composite N required)
-        ↓
-Aggregate densities per cell → Normalize → Scale (linear with floor)
-        ↓
-Grid Data Table (summary per cell with continuous weights)
-        ↓
-Suggest QUBO Parameters (α weights, radii, λ — data-driven starting point)
-```
-
-### Phase 2: Quantum Optimization (QAOA via Qiskit)
-```
-Grid Data Table
-        ↓
-Formulate as optimization problem (cost Hamiltonian)
-        ↓
-Run QAOA (multiple shots / parameter variations)
-        ↓
-Collect top-k candidate solutions
-        ↓
-Candidate Grid ID Sets (initial population for GA)
-```
-
-### Phase 3: Classical Genetic Algorithm Refinement
-```
-Initial Population (from QAOA output)
-        ↓
-Evaluate Fitness (density-weighted proximity + bonuses + penalties)
-        ↓
-Selection → Crossover → Mutation (spatially aware)
-        ↓
-Repeat for G generations
-        ↓
-Final Ranked Shortlist of Grid IDs
-```
-
-### Phase 4: Evaluation & Visualization
-```
-Compare: Only QAOA vs Only GA (random seed) vs Hybrid (QAOA + GA)
-        ↓
-Scoring metrics, convergence plots, grid visualizations
-```
-
----
-
 ## Fitness Function — Unified QUBO Formulation
 
 ### Why QUBO Format
 
 The fitness function is formulated as a Quadratic Unconstrained Binary Optimization (QUBO) problem. This is a deliberate design choice that provides a critical advantage: the same mathematical formulation drives both the quantum and classical components of the hybrid algorithm.
-
-<!-- A QUBO problem takes the form:
-
-```
-f(x) = x^T Q x = Σ_i Q_ii x_i + Σ_{i<j} Q_ij x_i x_j
-```
-
-Where `x` is a vector of binary variables and `Q` is an upper triangular matrix of weights. Since `x_i ∈ {0,1}`, we have `x_i² = x_i`, so diagonal terms are effectively linear.
-
-**Why this matters for our hybrid approach:**
-
-1. **QAOA requires it.** QAOA works by encoding the optimization objective as a cost Hamiltonian, which is derived directly from the QUBO matrix Q. Without a QUBO formulation, we cannot use QAOA at all.
-
-2. **The GA can use it directly.** Given an individual (a list of grid IDs), we convert it to a binary vector `x` (1s at selected grid positions, 0s elsewhere) and evaluate `f(x) = x^T Q x`. This is a simple matrix operation — fast and exact.
-
-3. **Unified objective = fair comparison.** Since both QAOA and GA optimize the exact same function, we can fairly compare their results. If the GA uses a different fitness function, any performance difference could be attributed to either the search strategy OR the objective difference — making it impossible to isolate the quantum advantage.
-
-4. **Single Q matrix = build once, use everywhere.** The Q matrix is computed once from the grid data and shared across both algorithms. No duplication, no inconsistency. -->
 
 ### Binary Variables
 
@@ -559,11 +588,6 @@ where $s_c = \frac{1}{1 + \sum_{\substack{e \in E_{all} \\ d(c,e) \leq R_s}} \fr
 
 Note: H5 (`α₅ · 2λ`) is **not stored** in the sparse Q matrix. For QAOA it is applied as a separate Hamiltonian term. For the GA it is skipped entirely (always evaluates to 0).
 
-<!-- 
-| Algorithm | How it uses Q |
-|-----------|--------------|
-| **QAOA** | Sparse Q^obj (H1-H4, H6) is converted to a cost Hamiltonian. H5 penalty is added as a separate Hamiltonian term (not stored in Q). QAOA circuit parameters are optimized to minimize the total. Multiple shots yield multiple candidate solutions. Future: XY-mixer eliminates H5 entirely. |
-| **GA** | Given an individual [42, 117, 203], convert to binary vector x, compute fitness using only Q^obj (sparse). H5 is skipped entirely — GA encoding guarantees exactly m chargers, so H5 always evaluates to 0. Lower fitness = better individual. | -->
 
 ### Verification
 
@@ -587,16 +611,6 @@ Every design requirement and identified edge case is handled by at least one ter
 
 ---
 
-<!-- ### Implementation Notes
-
-**Q matrix sparsity:** All terms use local radii, making Q grid-local sparse. H5 is not stored in Q — GA skips it, QAOA applies it separately. -->
-
-<!-- **Precomputation:** The following values should be computed once from grid data before building Q:
-- `w_c` for all cells (Section 4.3 aggregation + scaling)
-- `nw_c = w_c / scale_factor` for all cells
-- `s_c` for all POI cells (service gap factor, summing over chargers in E_all within Rₛ)
-- `g_i` for all cells (gas station count)
-- Neighbor lists per cell for each radius (R₁, R₃, R₄, R₆) -->
 
 ### Tunable Parameters Summary
 
@@ -629,13 +643,74 @@ Note: `α` parameters and `β, γ, δ, ε` are technically redundant (e.g., `α�
 
 Each term's raw contributions are **normalized** (divided by max absolute value across the grid) before applying `α` weights, so that `α₁ = 2, α₃ = 1` genuinely means "POI attraction is twice as important as existing charger penalty" regardless of dataset.
 
-<!-- ### Known Limitation — The min() Problem
 
-The ideal scoring metric would use the minimum distance from each POI to its nearest charger: `Σ min_distance(poi, nearest_charger)`. However, the `min()` function cannot be expressed as a quadratic function of binary variables. This is the same limitation identified in the reference paper (Section IV-B).
+---
 
-Our H1 term approximates this by summing weighted inverse distances from ALL POI cells — this creates attraction toward POI-dense regions and correlates well with the true min-distance metric when chargers are reasonably distributed. The addition of H6 (coverage redundancy) further improves this approximation by discouraging the degenerate case where all chargers cluster at the single most attractive point. The GA refinement step after QAOA helps close any remaining gap between the QUBO proxy and the true objective.
+## QUBO-Based Cell Pruner
 
-If needed, the GA can optionally use a richer non-QUBO fitness function (with actual min-distance) as a secondary evaluation for final ranking, while keeping the QUBO as the primary optimization target for both algorithms. -->
+### Purpose and Pipeline Position
+
+The cell pruner sits **after** `build_qubo()` on the full N-cell grid and **before** QAOA. It reduces the number of binary variables fed to the quantum stage by eliminating grid cells that provably (or very likely) cannot appear in any optimal solution. This is what makes QAOA tractable at medium scale without modifying the QUBO formulation itself.
+
+The pruner is called "QUBO-based" because its correctness guarantees derive directly from the QUBO structure, specifically, the fact that all off-diagonal entries in Q_obj (H4 and H6) are non-negative (they are penalties). This gives us a key mathematical property:
+
+> **solo(i) = Q_obj[(i,i)] is an upper bound on cell i's net contribution to any solution.** Pairwise terms can only add cost, never reduce it below the solo score.
+
+### Three-Tier Pruning Architecture
+
+The pruner runs three tiers in sequence. Each tier returns a surviving set passed to the next.
+
+---
+
+#### Tier 1 — Dead Cell Elimination (Provably Safe)
+
+Removes cells with `solo(i) = 0` that are also beyond radius R₄ of any "competitive" cell (a cell with `solo < 0`).
+
+**Rationale:** A zero-solo cell contributes nothing to the objective on its own. The only reason to keep a zero-solo cell is if it is within R₄ of a competitive cell, in that case it could provide a "spacing relief" option that reduces H4 penalties for the surrounding solution. Beyond R₄, it cannot interact with competitive cells and is safe to remove.
+
+**Guarantee:** Provably safe. No optimal solution can contain a zero-solo cell that is also isolated from all competitive cells.
+
+---
+
+#### Tier 2 — Bound-Based Elimination (Provably Safe)
+
+For each surviving cell i, computes a lower bound on the QUBO score of any solution containing i:
+
+```
+LB(i) = solo(i) + sum of (m-1) best solos from all other surviving cells
+```
+
+Since pairwise penalties are ≥ 0, this lower bound is valid, the true score of any solution containing i is at least LB(i). A reference score is obtained by running a sequential greedy search (picks cells one at a time minimizing total score including pairwise terms) on the surviving set.
+
+If `LB(i) > reference_score`, cell i is provably suboptimal and removed. Cells selected by the greedy search itself are never pruned.
+
+**Guarantee:** Provably safe. Any optimal solution scoring ≤ reference_score is preserved.
+
+---
+
+#### Tier 3 — Spatial Deduplication (Heuristic)
+
+Groups surviving cells into micro-clusters: two cells are in the same cluster if they are adjacent (Chebyshev distance ≤ 1) **and** their solo scores differ by less than 5% of the overall solo score range. Within each cluster, keeps the top-K by solo score (default K = max(3, m)).
+
+**Rationale:** Clusters of nearly identical adjacent cells are approximately interchangeable from the optimizer's perspective. Keeping only the top few retains the best representatives while reducing variables.
+
+**Important caveats:**
+- This is a heuristic — it is not provably optimal-preserving.
+- The 5% score similarity gate prevents false merges between adjacent cells that play structurally different roles.
+- A minimum survival floor of max(3m, 6) cells is enforced: pruning stops if the surviving count would fall below this floor.
+<!-- - Must be validated on small instances via brute-force before trusting on larger problems. -->
+
+
+---
+
+### Expected Reduction
+
+For EVCP(5,3,3) on a 16×16 grid (N=256):
+- Most cells have `solo = 0` (no nearby POIs, no gas stations) → eliminated in Tier 1
+- Tier 2 prunes cells with solo scores dominated by the greedy reference
+- Typical result: 256 → 20–60 surviving cells depending on POI density distribution
+
+This reduction is what makes statevector QAOA feasible on medium instances and MPS-based QAOA practical on larger ones.
 
 ---
 
@@ -704,23 +779,61 @@ A ranked list of grid IDs with their fitness scores, showing why each was select
 
 ## QAOA Component Details
 
-**QAOA (Quantum Approximate Optimization Algorithm)** implemented via **Qiskit** (or Cirq as alternative).
+**QAOA (Quantum Approximate Optimization Algorithm)** implemented via **Qiskit** (`qaoa_builder.py`).
 
 ### Role in the Hybrid
+
 The quantum component's job is to produce a high-quality initial population for the GA by:
-- Exploring the combinatorial space of possible charger placements
-- Leveraging quantum superposition to evaluate many configurations simultaneously
-- Returning multiple good candidate solutions (not just one)
+- Exploring the pruned combinatorial space (K surviving cells, not the full N-cell grid)
+- Leveraging QAOA's variational structure to concentrate probability on low-energy states
+- Returning multiple good candidate solutions (not just one) via the output buffer
 
-### Integration Approaches to Explore
+### Execution Modes
 
-| Approach | Description | 
-|----------|-------------|
-| **A: Multi-shot seeding** | Run QAOA multiple times → top-k solutions become GA initial population |
-| **B: Warm-start GA** | QAOA best result → generate GA population as mutations around it |
-| **C: Iterative hybrid** | QAOA → GA → feed back to QAOA → repeat |
+Two execution modes are available depending on post-prune variable count K:
 
-We will start with Approach A and experiment with others if time permits.
+#### Mode 1 — Exact Statevector (`run_qaoa`)
+- Uses `StatevectorEstimator` and `Statevector.from_instruction` for exact probability extraction
+- COBYLA optimization of variational parameters, multiple random restarts
+- Returns the exact statevector after optimization → all feasible basis states ranked by QUBO score
+- **Use when:** K ≤ ~20. This is the ground-truth reference; no approximation.
+
+#### Mode 2 — MPS Simulation (`run_qaoa` with Aer MPS backend, or `run_qaoa_noisy`)
+- Uses Qiskit Aer's MPS simulator (`method='matrix_product_state'`)
+- For low-p QAOA (p ≤ 3), circuits are shallow and build limited entanglement. MPS can represent these states exactly at sufficient bond dimension.
+- **Use when:** K ≤ ~50–80. This is the primary PoC execution mode for medium-scale problems.
+- **Bond dimension:** Should be set high enough that Mode 1 and Mode 2 agree on the top-3 solutions for small instances (K ≤ 20). If they disagree, bond dimension is too low.
+
+
+### What "PoC Valid" Means for MPS
+
+MPS simulation is classical: it gives no evidence of quantum speedup. The valid PoC claim is:
+
+> "MPS-seeded GA outperforms random-seeded GA on medium-scale instances."
+
+This demonstrates that the *seeding benefit* — better initial population → faster convergence → better final solution, is a real structural property of the hybrid approach. Because MPS accurately simulates low-p QAOA circuits, the same seeding benefit would be expected from actual QAOA hardware. This is the claim the experiments support; quantum speedup is out of scope for this PoC.
+
+### QUBO → Ising Conversion
+
+QAOA operates on an Ising Hamiltonian, not the QUBO directly. The conversion uses the substitution $x_i = (1 − z_i)/2$ where $z_i ∈ {−1, +1}$:
+
+- **Diagonal Q[(i,i)]:** contributes $h[i] = −Q_{ii}/2$ (single-Z term) and offset $Q_{ii}/2$
+- **Off-diagonal Q[(i,j)]:** contributes $J[(i,j)] = Q_{ij}/4$ (ZZ term), $h[i] += −Q_{ij}/4, h[j] += −Q_{ij}/4$, offset $Q_{ij}/4$
+- **H5 (constraint):** converted separately via `h5_to_ising_coeffs` and merged — never stored in the sparse $Q_{obj}$
+
+The key invariant: `QUBO_energy(x) = Ising_energy(z) + offset`, so evaluating solutions in either space gives consistent results.
+
+### Output Format and Buffer
+
+```python
+results = [(score, [cell_ids], probability_or_frequency), ...]
+```
+
+Sorted ascending by score (best first). Length = `m + BUFFER` where `BUFFER = min(max(1, ceil(m/2)), 5)`. Cell IDs are in the original pre-pruning coordinate system (translation from qubit indices is applied automatically).
+
+### Integration Approach
+
+We use **Multi-shot seeding**: QAOA returns top-k solutions which become the GA's initial population.
 
 ---
 
@@ -736,8 +849,6 @@ Example: `[42, 117, 203]` for placing 3 new chargers.
 - **Crossover:** Swap subsets of charger placements between parents (TBD — papers to review)
 - **Mutation:** Shift a charger to a neighboring grid cell (spatially aware) (TBD — papers to review)
 
-<!-- ### 9.3 GA Library
-Python-based. Options include DEAP (a popular evolutionary computation library) or custom implementation — to be decided during development. -->
 
 ---
 
@@ -765,100 +876,45 @@ Exact numbers to be calibrated during development.
 
 ---
 
-## Evaluation Plan
-
-### Methods to Compare
-| Method | Description |
-|--------|-------------|
-| **Only GA (random seed)** | Classical GA with random initial population |
-| **Hybrid (QAOA + GA)** | Proposed method — QAOA seeds the GA |
-
-### Metrics
-- Primary fitness score
-- Convergence speed (generations to reach good solution)
-- Solution stability (variance across multiple runs)
-- Paper's scoring metric (sum of min distances from each POI to nearest charger) — for benchmarking against the reference paper
-
-### Visualizations
-- Grid maps showing POIs, existing chargers, gas stations, and new placements
-- Fitness vs. generation convergence plots (GA only vs. Hybrid)
-- Bar charts comparing scores across methods and datasets (similar to Figures 4 and 5 in the reference paper)
-
----
-
-<!-- ## 12. Development Roadmap
-
-### Step 1: Data Generation Module
-- Synthetic city data generator
-- POIs with population density values (0 to 1), gas stations, existing chargers
-- Configurable parameters (city size, density distribution, etc.)
-
-### Step 2: Grid Discretization Module
-- Flexible N-cell gridding with layout options (N = number of qubits, composite required)
-- Grid data table construction
-- Chebyshev distance computation utilities
-
-### Step 3: Quantum Solver Module (QAOA)
-- Problem formulation as cost Hamiltonian
-- QAOA circuit construction and execution via Qiskit
-- Multi-shot solution collection
-
-### Step 4: Genetic Algorithm Module
-- Individual encoding, fitness function
-- Selection, crossover, mutation operators
-- Population management and evolution loop
-
-### Step 5: Hybrid Integration
-- QAOA output → GA initial population pipeline
-- End-to-end hybrid execution
-
-### Step 6: Evaluation & Benchmarking
-- Run all three methods on same datasets
-- Compute metrics, generate plots
-- Compare with reference paper results
-
-### Step 7: Scaling & Optimization
-- Test on larger datasets
-- Tune hyperparameters
-- Explore alternative integration approaches (B, C)
-- Explore constrained mixers for QAOA to eliminate H5 -->
-
----
-
 ## Open Items (To Be Resolved During Development)
 
 | Item | Status |
 |------|--------|
+| **Genetic Algorithm module** (`ga_solver.py`) | **NEXT — blocker for hybrid integration** |
+| Tier 3 brute-force validation (q=4, N=16, m=2) | To do before trusting pruner on larger instances |
+| MPS agreement test (statevector vs MPS, K ≤ 20) | To do before medium-scale experiments |
 | Output candidate count (`n + BUFFER`) | Fixed buffer of 3, to be validated against user needs |
 | Crossover and mutation strategies | Papers to review, then decide |
-| Specific QAOA circuit design and parameter optimization | To be designed in Step 3 |
-| Paper's scoring metric integration | To be addressed when relevant |
-| QUBO α weights (`α₁` through `α₆`) | To be tuned experimentally |
+| QUBO α weights (`α₁` through `α₆`) | Data-driven defaults from `suggest_parameters`; experimental tuning pending |
 | Gas station bonus magnitude (`β`) | To be tuned experimentally |
 | Existing charger penalty magnitude (`γ`) | To be tuned experimentally |
 | New charger spacing magnitude (`δ`) | To be tuned experimentally |
 | Coverage redundancy magnitude (`ε`) | To be tuned experimentally |
-| Constraint penalty multiplier (`λ`) | Heuristic: ~2-5× largest other term |
+| Constraint penalty multiplier (`λ`) | Heuristic: ~5× max objective gain; validated by score decomposition |
 | Local radii (`R₁, Rₛ, R₃, R₄, R₆`) | Defaults set, to be tuned experimentally |
 | `scale_factor` for cell weighting | Default: 5, to be tuned experimentally |
 | `min_weight` floor for cell weighting | Default: 0.5, to be tuned experimentally |
-| Constrained mixers for QAOA | To explore in Step 7 if H5 causes performance issues |
+| Tier 2 greedy runtime on N=256 | Needs timing — O(m × K × |Q_obj|) can be slow; profile before scaling |
+| Constrained mixers (XY-mixer) for QAOA | To explore if H5 causes performance issues; eliminates constraint term entirely |
+| MPS bond dimension selection | Validated when statevector and MPS top-3 agree; default TBD |
 
 ---
 
 ## Key Innovations Over the Reference Paper
 
 1. **Direct qubit-to-cell mapping** — N grid cells = N physical qubits. Grid resolution scales exactly with available hardware. N must be composite to allow a rectangular layout; the code enforces this constraint.
-2. **Continuous density-based cell weighting** — eliminates arbitrary tier boundaries, adapts automatically to grid resolution changes, and preserves full granularity of the density distribution
-3. **Automated parameter suggestion** — `suggest_parameters` derives data-driven starting values for all α weights, radii, and λ from the grid data, using magnitude-matching and dataset diagnostics. Removes the need for blind manual tuning.
-4. **Unified QUBO formulation for both QAOA and GA** — same Q matrix drives both algorithms, enabling fair comparison and consistent optimization landscape
-4. **Smooth charger clustering penalty** — inversely scaled by cell weight, allowing clustering in high-demand areas and penalizing in low-demand areas with no arbitrary cutoffs
-5. **Gas station co-location bonus** — leverages existing infrastructure as a soft incentive, scales with gas station count
-6. **Flexible output (shortlist > n)** — gives planners practical decision support
-7. **Chebyshev grid distance** — simpler and more intuitive than Euclidean for zonal planning
-8. **Local radii for Q matrix sparsity** — every term uses distance cutoffs, H5 stored separately, making Q grid-local sparse
-9. **Saturation-aware repulsion** — existing charger penalty and service gap factor sum over individual chargers, not cells, naturally handling multi-charger saturation
+2. **Continuous density-based cell weighting** — eliminates arbitrary tier boundaries, adapts automatically to grid resolution changes, and preserves full granularity of the density distribution.
+3. **QUBO-based cell pruner** — reduces the N-cell QUBO to K surviving cells (K << N) using provably safe Tier 1 and Tier 2 pruning plus heuristic Tier 3 spatial deduplication. Operates on the built Q_obj so solo scores exactly match QUBO diagonals. Makes QAOA tractable on medium-scale problems without modifying the formulation.
+4. **Three-tier execution strategy** — brute-force for exact validation (K ≤ 20), statevector QAOA for small post-prune instances, MPS-based QAOA simulation as the PoC-valid path for medium scale. Adapts to available compute resources.
+5. **Automated parameter suggestion** — `suggest_parameters` derives data-driven starting values for all α weights, radii, and λ from the grid data, using magnitude-matching and dataset diagnostics. Removes the need for blind manual tuning.
+6. **Unified QUBO formulation for both QAOA and GA** — same Q matrix drives both algorithms, enabling fair comparison and consistent optimization landscape.
+7. **Smooth charger clustering penalty** — inversely scaled by cell weight, allowing clustering in high-demand areas and penalizing in low-demand areas with no arbitrary cutoffs.
+8. **Gas station co-location bonus** — leverages existing infrastructure as a soft incentive, scales with gas station count.
+9. **Flexible output (shortlist > n)** — gives planners practical decision support.
+10. **Chebyshev grid distance** — simpler and more intuitive than Euclidean for zonal planning.
+11. **Local radii for Q matrix sparsity** — every term uses distance cutoffs, H5 stored separately, making Q grid-local sparse.
+12. **Saturation-aware repulsion** — existing charger penalty and service gap factor sum over individual chargers, not cells, naturally handling multi-charger saturation.
 
 ---
 
-*Document Version: 1.8 — March 11, 2026*
+*Document Version: 1.9 — March 13, 2026*
