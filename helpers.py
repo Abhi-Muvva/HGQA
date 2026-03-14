@@ -330,7 +330,8 @@ def divide_graph_into_parts(
 def plot_cell_weights(plot_deets, grid_details, cell_weights,
                       points_of_interest=None, existing_chargers=None, gas_stations=None,
                       show_data_points=True, show_weight_values=True,
-                      show_grid_ids=True):
+                      show_grid_ids=True, cell_cmap='YlOrRd',
+                      poi_style='density'):
     """
     Visualize cell weights as a heatmap.
 
@@ -357,6 +358,10 @@ def plot_cell_weights(plot_deets, grid_details, cell_weights,
         Whether to annotate cells with weight values (only practical for small grids)
     show_grid_ids : bool, default=True
         Whether to annotate each cell with its grid ID
+    cell_cmap : str, default='YlOrRd'
+        Colormap used for the grid-cell heatmap
+    poi_style : {'density', 'solid_red'}, default='density'
+        Whether POIs are colored by density or shown as solid red markers
     """
     x_min     = plot_deets['x_min']
     x_max     = plot_deets['x_max']
@@ -378,7 +383,7 @@ def plot_cell_weights(plot_deets, grid_details, cell_weights,
     weight_matrix_masked = np.ma.masked_where(weight_matrix == 0, weight_matrix)
 
     # Plot heatmap (left colorbar: Cell Weight)
-    im = ax.imshow(weight_matrix_masked, cmap='YlOrRd', origin='lower',
+    im = ax.imshow(weight_matrix_masked, cmap=cell_cmap, origin='lower',
                    extent=[x_min, x_max, y_min, y_max],
                    aspect='auto', interpolation='nearest', alpha=0.6,
                    vmin=0, vmax=max(w['weight'] for w in cell_weights.values()))
@@ -413,16 +418,23 @@ def plot_cell_weights(plot_deets, grid_details, cell_weights,
             if label_parts:
                 ax.annotate('\n'.join(label_parts), (cx, cy), ha='center', va='center',
                            fontsize=max(5, min(8, 200 // max(num_rows, num_cols))),
-                           color='gray', alpha=0.7)
+                           color='black', alpha=0.7)
 
     # Overlay data points — match _plot_grid styles exactly
     sc = None
     if show_data_points:
         if points_of_interest:
-            sc = ax.scatter([p[0] for p in points_of_interest], [p[1] for p in points_of_interest],
-                           c=[p[2] for p in points_of_interest], cmap='YlOrRd',
-                           edgecolors='green', linewidths=1.5, s=60, vmin=0, vmax=1,
+            poi_x = [p[0] for p in points_of_interest]
+            poi_y = [p[1] for p in points_of_interest]
+            if poi_style == 'solid_red':
+                ax.scatter(poi_x, poi_y, color='red', marker='*', s=100,
+                           edgecolors='black', linewidths=0.5,
                            zorder=5, label='POIs')
+            else:
+                sc = ax.scatter(poi_x, poi_y,
+                                c=[p[2] for p in points_of_interest], cmap='YlOrRd',
+                                edgecolors='green', linewidths=1.5, s=60, vmin=0, vmax=1,
+                                zorder=5, label='POIs')
         if existing_chargers:
             ax.scatter(*zip(*existing_chargers), color='blue', marker='s', s=80,
                       zorder=5, edgecolors='darkblue', linewidths=1, label='Existing Chargers')
@@ -548,16 +560,21 @@ def suggest_parameters(grid_details: Dict, cell_weights: Dict, plot_deets: Dict,
     grid_side = int(N ** 0.5)
 
     # ── Step 1: Radii from grid geometry ─────────────────────────────────────
-    # Fractions from FA-002: R1=30%, R3=R4=20%, R6=15% of grid_side
-    # Baseline ordering requirement: R1 >= R4 > R3 >= R6
+    # Baseline Section 8 (Tunable Parameters Summary):
+    #   R1 = 30% of grid side, min 2
+    #   R3 = 20% of grid side − 1, min 2   ← the −1 naturally gives R4 > R3
+    #   R4 = 20% of grid side, min 2
+    #   R6 = 15% of grid side, min 2
+    # Ordering requirement: R1 >= R4 > R3 >= R6
     R1 = max(2, int(grid_side * 0.30))
     Rs = R1
-    R3 = max(2, int(grid_side * 0.20))
+    R3 = max(2, int(grid_side * 0.20) - 1)
     R4 = max(2, int(grid_side * 0.20))
     R6 = max(2, int(grid_side * 0.15))
 
-    # Enforce baseline ordering: R1 >= R4 > R3 >= R6
-    # R3 and R4 are equal by formula so R4 > R3 is not guaranteed — nudge R3 down if needed
+    # Enforce baseline ordering as a safety net — the formulas above should
+    # already satisfy R4 > R3, but edge cases (very small grid_side) can
+    # collapse them.  Nudge if needed.
     if R3 >= R4:
         R3 = max(1, R4 - 1)
     if R6 > R3:
@@ -836,6 +853,12 @@ def suggest_parameters(grid_details: Dict, cell_weights: Dict, plot_deets: Dict,
         )
     if m < 1:
         warnings.append("m < 1 — no chargers to place. All terms are irrelevant.")
+    if R1 == R4 and R3 == R6:
+        warnings.append(
+            f"Small grid (side={grid_side}): radii collapsed to R₁=R₄={R1}, R₃=R₆={R3}. "
+            f"Most cells are within every radius — distance cutoffs provide little sparsity. "
+            f"Results are valid but parameter sensitivity may differ from larger grids."
+        )
 
     return {
         'radii':  {'R1': R1, 'Rs': Rs, 'R3': R3, 'R4': R4, 'R6': R6},

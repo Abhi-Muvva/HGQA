@@ -424,7 +424,7 @@ def calibrate_alphas(
     needs_rebuild = False
     changes      = []
 
-    if h4_peak > target and h4_peak > 0:
+    if h4_peak > target* 1.001 and h4_peak > 0:
         scale = target / h4_peak
         old   = new_params.get('alpha4', 1.0)
         new_params['alpha4'] = round(old * scale, 4)
@@ -434,7 +434,7 @@ def calibrate_alphas(
             f"(H4 peak {h4_peak:.4f} > target {target:.4f})"
         )
 
-    if h6_peak > target and h6_peak > 0:
+    if h6_peak > target* 1.001 and h6_peak > 0:
         scale = target / h6_peak
         old   = new_params.get('alpha6', 1.0)
         new_params['alpha6'] = round(old * scale, 4)
@@ -449,8 +449,8 @@ def calibrate_alphas(
         print("CALIBRATE_ALPHAS")
         print(f"  Diagonal peak:  {diag_peak:.4f}")
         print(f"  Target (×{target_ratio}): {target:.4f}")
-        print(f"  H4 actual peak: {h4_peak:.4f}  {'✗ TOO HIGH' if h4_peak > target else '✓ OK'}")
-        print(f"  H6 actual peak: {h6_peak:.4f}  {'✗ TOO HIGH' if h6_peak > target else '✓ OK'}")
+        print(f"  H4 actual peak: {h4_peak:.4f}  {'✗ TOO HIGH' if h4_peak > target* 1.001 else '✓ OK'}")
+        print(f"  H6 actual peak: {h6_peak:.4f}  {'✗ TOO HIGH' if h6_peak > target* 1.001 else '✓ OK'}")
         if changes:
             print("  Adjustments:")
             for c in changes:
@@ -499,3 +499,113 @@ def evaluate_solution(
         total += h5_params['alpha5'] * h5_params['lam'] * violation ** 2
 
     return total
+
+
+def brute_force_ranking(
+    Q_obj: Dict,
+    N: int,
+    m: int,
+    top_k: int = 10,
+) -> List[Tuple[float, Tuple[int, ...]]]:
+    """
+    Brute-force evaluate all C(N, m) solutions. Feasible only for small N.
+ 
+    All C(N, m) combinations have exactly m entries, so H5 = 0 for every
+    solution evaluated here — h5_params is irrelevant and not accepted.
+ 
+    Parameters
+    ----------
+    Q_obj : sparse objective Q from build_qubo()
+    N     : total number of grid cells
+    m     : number of chargers to place
+    top_k : number of top solutions to return (pass N to get full ranking)
+ 
+    Returns
+    -------
+    List of (score, solution_tuple) sorted ascending (best first).
+    """
+    from math import comb
+    n_solutions = comb(N, m)
+    if n_solutions > 1_000_000:
+        raise ValueError(
+            f"C({N},{m}) = {n_solutions:,} — too expensive to brute-force. "
+            f"Reduce N or m for exhaustive validation."
+        )
+ 
+    results = [
+        (evaluate_solution(Q_obj, list(sol)), sol)
+        for sol in combinations(range(N), m)
+    ]
+    results.sort(key=lambda x: x[0])
+    return results[:top_k]
+ 
+ 
+# ---------------------------------------------------------------------------
+# Diagnostic reporting
+# ---------------------------------------------------------------------------
+ 
+def print_qubo_diagnostics(diags: Dict, params: Dict = None):
+    """Print structured summary of Q_obj construction."""
+    SEP = "=" * 65
+    print(SEP)
+    print("QUBO CONSTRUCTION DIAGNOSTICS (Q_obj — H1 through H6, H5 separate)")
+    print(SEP)
+ 
+    print(f"\nGrid:  N={diags['N']} cells,  m={diags['m']} new chargers")
+    print(f"  POI cells:            {len(diags['C_POI'])}")
+    print(f"  Cells w/ chargers:    {len(diags['C_ex'])}")
+    print(f"  Individual chargers:  {len(diags['E_all'])}  "
+          f"(E_all — counts: { {c: diags['E_all'].count(c) for c in set(diags['E_all'])} })")
+    print(f"  Radii: R1={diags['R1']}, Rs={diags['Rs']}, "
+          f"R3={diags['R3']}, R4={diags['R4']}, R6={diags['R6']}")
+ 
+    if params:
+        print(f"\nCall parameters:")
+        for k, v in params.items():
+            print(f"  {k:12s} = {v}")
+ 
+    print(f"\nNORMALIZATION SCALES (raw max-abs, divisor applied before α):")
+    fmt = "  {:3s}: scale={:.5f}  raw range [{:+.4f}, {:+.4f}]"
+    print(fmt.format("H1", diags['norm_scale_h1'], *diags['h1_raw_range']))
+    print(fmt.format("H2", diags['norm_scale_h2'], *diags['h2_raw_range']))
+    print(fmt.format("H3", diags['norm_scale_h3'], *diags['h3_raw_range']))
+ 
+    print(f"\nDIAGONAL RANGES IN Q_obj (post-normalization × α):")
+    fmt2 = "  {:3s}: [{:+.4f}, {:+.4f}]"
+    print(fmt2.format("H1", *diags['h1_diag_range']))
+    print(fmt2.format("H2", *diags['h2_diag_range']))
+    print(fmt2.format("H3", *diags['h3_diag_range']))
+    print(f"  H5: NOT stored in Q_obj")
+ 
+    print(f"\nOFF-DIAGONAL PAIRS IN Q_obj:")
+    print(f"  H4 (within R4={diags['R4']}):  {diags['h4_nonzero_pairs']} non-zero pairs")
+    print(f"  H6 (within R6={diags['R6']}):  {diags['h6_nonzero_pairs']} non-zero pairs")
+    print(f"  H5: NOT stored in Q_obj (use h5_params)")
+ 
+    diag_entries = sum(1 for (i, j) in diags.get('_q_keys', []) if i == j)
+    print(f"\nQ_obj SIZE:  {diags['total_Q_obj_entries']} total entries  "
+          f"(diagonal: {diags['N']}, off-diagonal: "
+          f"{diags['total_Q_obj_entries'] - diags['N']})")
+    print(SEP)
+ 
+ 
+def print_service_gaps(diags: Dict):
+    """Print service gap factors s_c for all POI cells."""
+    s        = diags['precomputed']['s']
+    C_POI    = diags['C_POI']
+    E_all    = diags['E_all']
+    Rs       = diags['Rs']
+    num_cols = diags['num_cols']
+ 
+    charger_counts = {c: E_all.count(c) for c in set(E_all)}
+    print(f"\nSERVICE GAP FACTORS s_c  (Rs={Rs}, "
+          f"{len(E_all)} individual charger(s) across "
+          f"{len(set(E_all))} cell(s)):")
+    print(f"  Charger cells → counts: {charger_counts}")
+    for c in sorted(C_POI):
+        w_c  = diags['precomputed']['w'][c]
+        nw_c = diags['precomputed']['nw'][c]
+        row, col = divmod(c, num_cols)
+        print(f"  Cell {c:>3} (row={row}, col={col}):  "
+              f"s={s[c]:.4f},  w={w_c:.3f},  nw={nw_c:.3f}")
+ 
