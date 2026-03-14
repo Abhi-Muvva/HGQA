@@ -107,7 +107,6 @@ Remap Q_obj keys to 0..K-1 for QAOA
 The quantum stage adapts to problem size. After pruning, K is the number of surviving cells (qubits fed to QAOA):
 
 
-
 ```
 Pruned Q_obj (K variables)  +  H5 params (applied separately)
         |
@@ -126,7 +125,6 @@ Translate qubit indices back to original cell IDs
         v
 Candidate Grid ID Sets (initial population for GA)
 ```
-
 
 ### Phase 4: Classical Genetic Algorithm Refinement
 ```
@@ -253,6 +251,7 @@ After gridding and weight calculation, each cell contains:
 ### Why QUBO Format
 
 The fitness function is formulated as a Quadratic Unconstrained Binary Optimization (QUBO) problem. This is a deliberate design choice that provides a critical advantage: the same mathematical formulation drives both the quantum and classical components of the hybrid algorithm.
+
 
 ### Binary Variables
 
@@ -644,6 +643,7 @@ Note: `α` parameters and `β, γ, δ, ε` are technically redundant (e.g., `α�
 Each term's raw contributions are **normalized** (divided by max absolute value across the grid) before applying `α` weights, so that `α₁ = 2, α₃ = 1` genuinely means "POI attraction is twice as important as existing charger penalty" regardless of dataset.
 
 
+
 ---
 
 ## QUBO-Based Cell Pruner
@@ -711,6 +711,7 @@ For EVCP(5,3,3) on a 16×16 grid (N=256):
 - Typical result: 256 → 20–60 surviving cells depending on POI density distribution
 
 This reduction is what makes statevector QAOA feasible on medium instances and MPS-based QAOA practical on larger ones.
+
 
 ---
 
@@ -873,6 +874,9 @@ Exact numbers to be calibrated during development.
 
 
 **Start small (paper-comparable datasets) → scale to mid-size city → push to see where the algorithm's limits are.**
+
+
+- Explore constrained mixers for QAOA to eliminate H5 -->
 
 ---
 
