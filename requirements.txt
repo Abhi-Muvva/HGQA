@@ -1,0 +1,29 @@
+# HGQA — Core dependencies
+# Install with: .venv/bin/pip install -r requirements.txt
+
+# Quantum computing
+qiskit==2.3.0
+qiskit-aer==0.17.2
+qiskit-ibm-runtime==0.45.1
+
+# Numerical / scientific
+numpy>=1.24
+scipy>=1.11
+matplotlib>=3.7
+pandas>=2.0
+openpyxl>=3.1
+
+# Utilities
+tabulate>=0.9
+tqdm>=4.65
+networkx>=3.1
+
+# Jupyter
+ipykernel>=6.0
+ipython>=8.0
+jupyter-client>=8.0
+jupyter-core>=5.0
+
+# IBM runtime dependencies (pulled automatically by qiskit-ibm-runtime)
+ibm-cloud-sdk-core>=3.18
+ibm-platform-services>=0.40
