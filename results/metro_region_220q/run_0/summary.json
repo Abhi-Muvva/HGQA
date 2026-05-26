@@ -1,0 +1,108 @@
+{
+  "timestamp": "2026-05-25T19:12:46",
+  "dataset": "metro_region",
+  "N_qubits": 220,
+  "K_pruned": 210,
+  "tier3_keep_used": 3,
+  "m_chargers": 10,
+  "pruning": {
+    "original_N": 220,
+    "surviving_K": 210,
+    "reduction_pct": 4.5,
+    "tier1_pruned": 0,
+    "tier2_pruned": 0,
+    "tier3_pruned": 10
+  },
+  "brute_force": null,
+  "qaoa": {
+    "mode": "mps",
+    "best_score": -16.73448340687866,
+    "best_cells": [
+      2,
+      31,
+      68,
+      95,
+      108,
+      130,
+      138,
+      143,
+      154,
+      167
+    ],
+    "params": [
+      -1.2693026809702483,
+      0.11407547399007065,
+      0.04237303250672077,
+      -0.8170552580368877
+    ]
+  },
+  "ga": {
+    "qaoa_seed": {
+      "best_score": -24.156842454578175,
+      "best_cells": [
+        68,
+        71,
+        75,
+        102,
+        112,
+        125,
+        128,
+        155,
+        166,
+        171
+      ],
+      "runtime_sec": 0.584,
+      "n_generations": 200
+    },
+    "random": {
+      "best_score": -24.675575129434748,
+      "best_cells": [
+        68,
+        71,
+        75,
+        112,
+        125,
+        128,
+        134,
+        157,
+        166,
+        171
+      ],
+      "runtime_sec": 0.528,
+      "n_generations": 200
+    },
+    "greedy": {
+      "best_score": -24.675575129434748,
+      "best_cells": [
+        68,
+        71,
+        75,
+        112,
+        125,
+        128,
+        134,
+        157,
+        166,
+        171
+      ],
+      "runtime_sec": 0.534,
+      "n_generations": 200
+    }
+  },
+  "overall_best": {
+    "method": "GA (Random)",
+    "score": -24.675575129434748,
+    "cells": [
+      68,
+      71,
+      75,
+      112,
+      125,
+      128,
+      134,
+      157,
+      166,
+      171
+    ]
+  }
+}

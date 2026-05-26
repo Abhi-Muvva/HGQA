@@ -1,0 +1,62 @@
+{
+  "timestamp": "2026-05-25T14:19:51",
+  "dataset": "large_city",
+  "N_qubits": 150,
+  "K_pruned": 143,
+  "tier3_keep_used": 3,
+  "m_chargers": 7,
+  "pruning": {
+    "original_N": 150,
+    "surviving_K": 143,
+    "reduction_pct": 4.7,
+    "tier1_pruned": 0,
+    "tier2_pruned": 5,
+    "tier3_pruned": 2
+  },
+  "brute_force": null,
+  "qaoa": null,
+  "ga": {
+    "qaoa_seed": null,
+    "random": {
+      "best_score": -18.128146972661046,
+      "best_cells": [
+        35,
+        79,
+        81,
+        99,
+        102,
+        124,
+        127
+      ],
+      "runtime_sec": 0.373,
+      "n_generations": 200
+    },
+    "greedy": {
+      "best_score": -17.96423169494502,
+      "best_cells": [
+        35,
+        81,
+        87,
+        94,
+        99,
+        127,
+        139
+      ],
+      "runtime_sec": 0.403,
+      "n_generations": 200
+    }
+  },
+  "overall_best": {
+    "method": "GA (Random)",
+    "score": -18.128146972661046,
+    "cells": [
+      35,
+      79,
+      81,
+      99,
+      102,
+      124,
+      127
+    ]
+  }
+}

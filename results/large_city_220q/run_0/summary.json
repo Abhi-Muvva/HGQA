@@ -1,0 +1,93 @@
+{
+  "timestamp": "2026-05-25T18:40:47",
+  "dataset": "large_city",
+  "N_qubits": 220,
+  "K_pruned": 185,
+  "tier3_keep_used": 2,
+  "m_chargers": 7,
+  "pruning": {
+    "original_N": 220,
+    "surviving_K": 185,
+    "reduction_pct": 15.9,
+    "tier1_pruned": 0,
+    "tier2_pruned": 35,
+    "tier3_pruned": 0
+  },
+  "brute_force": null,
+  "qaoa": {
+    "mode": "mps",
+    "best_score": -14.093459241878245,
+    "best_cells": [
+      76,
+      125,
+      131,
+      148,
+      157,
+      168,
+      172
+    ],
+    "params": [
+      -2.295985874213611,
+      -0.4069420898080071,
+      -1.5587614616701533,
+      3.976517236680104
+    ]
+  },
+  "ga": {
+    "qaoa_seed": {
+      "best_score": -17.199747079186704,
+      "best_cells": [
+        74,
+        107,
+        125,
+        132,
+        148,
+        184,
+        191
+      ],
+      "runtime_sec": 0.553,
+      "n_generations": 200
+    },
+    "random": {
+      "best_score": -17.133022728356636,
+      "best_cells": [
+        88,
+        113,
+        125,
+        129,
+        157,
+        184,
+        189
+      ],
+      "runtime_sec": 0.493,
+      "n_generations": 200
+    },
+    "greedy": {
+      "best_score": -17.40064043111541,
+      "best_cells": [
+        88,
+        125,
+        132,
+        148,
+        157,
+        184,
+        191
+      ],
+      "runtime_sec": 0.488,
+      "n_generations": 200
+    }
+  },
+  "overall_best": {
+    "method": "GA (Greedy)",
+    "score": -17.40064043111541,
+    "cells": [
+      88,
+      125,
+      132,
+      148,
+      157,
+      184,
+      191
+    ]
+  }
+}

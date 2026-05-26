@@ -280,6 +280,67 @@ def _detect_knee(sweep_rows: Sequence[Dict], tolerance_pct: float = 1.0) -> int 
     return None
 
 
+def _perturbation_selection_frequency(
+    score_matrix: np.ndarray,
+    surviving_cells: Sequence[int],
+    m: int,
+    n_perturbations: int,
+    sigma_scale: float,
+    seed: int,
+) -> Dict:
+    """
+    Run greedy selection N times with small diagonal noise; track per-cell
+    selection frequency to identify low-evidence survivors.
+
+    Diagonal noise ~ Normal(0, sigma_scale * diag_std). Off-diagonal terms are
+    left unchanged so spatial interactions are not distorted.
+    """
+    rng = np.random.default_rng(seed)
+    surviving_arr = list(sorted(surviving_cells))
+
+    diag_vals = np.array([score_matrix[c, c] for c in surviving_arr], dtype=float)
+    diag_std = float(np.std(diag_vals)) if len(diag_vals) > 1 else 1.0
+    sigma = sigma_scale * diag_std
+
+    # Save originals so we can restore exactly (avoids float accumulation drift)
+    original_diag = {c: float(score_matrix[c, c]) for c in surviving_arr}
+    selection_counts: Dict[int, int] = {c: 0 for c in surviving_arr}
+
+    for _ in range(n_perturbations):
+        noise = rng.normal(0.0, sigma, len(surviving_arr))
+        for i, cell in enumerate(surviving_arr):
+            score_matrix[cell, cell] = original_diag[cell] + noise[i]
+
+        selected_cells, _ = _sequential_greedy(score_matrix, surviving_arr, m)
+        for c in selected_cells:
+            selection_counts[c] += 1
+
+    # Restore exact originals
+    for cell in surviving_arr:
+        score_matrix[cell, cell] = original_diag[cell]
+
+    freq = {c: selection_counts[c] / n_perturbations for c in surviving_arr}
+
+    core       = sorted(c for c, f in freq.items() if f > 0.80)
+    competitive = sorted(c for c, f in freq.items() if 0.01 < f <= 0.80)
+    marginal   = sorted(c for c, f in freq.items() if f <= 0.01)
+    K_effective = len(surviving_arr) - len(marginal)
+
+    return {
+        "status": "INFO",
+        "n_perturbations": n_perturbations,
+        "sigma_scale": sigma_scale,
+        "diag_std": diag_std,
+        "selection_freq": {c: round(freq[c], 4) for c in surviving_arr},
+        "core_cells": core,
+        "competitive_cells": competitive,
+        "marginal_cells": marginal,
+        "K": len(surviving_arr),
+        "K_effective": K_effective,
+        "marginal_fraction": len(marginal) / len(surviving_arr) if surviving_arr else 0.0,
+    }
+
+
 def run_pruning_validation(
     Q_obj: Dict[Tuple[int, int], float],
     N: int,
@@ -293,9 +354,17 @@ def run_pruning_validation(
     ga_generations: int = 500,
     ga_population: int = 100,
     seed: int = 42,
+    overkeeping_pass_ratio: float = 1.15,
+    overkeeping_fail_ratio: float = 1.50,
+    n_perturbations: int = 50,
+    perturbation_sigma_scale: float = 0.10,
 ) -> Dict:
     """
-    Run the five Tier-3 scale-validation checks and return a pass/fail report.
+    Run seven Tier-3 scale-validation checks and return a pass/fail report.
+
+    Checks 1-5 detect over-pruning (quality loss from pruning too aggressively).
+    Check 6 detects over-keeping (efficiency loss from pruning too little).
+    Check 7 identifies low-evidence survivors via perturbation selection frequency.
 
     Notes
     -----
@@ -303,6 +372,10 @@ def run_pruning_validation(
       score is the restricted search-space objective, equivalent to scoring on
       the remapped pruned QUBO.
     - Lower scores are better throughout.
+    - Check 6 status: PASS if current_K <= pass_ratio * K_at_knee,
+      WARN if <= fail_ratio * K_at_knee, FAIL otherwise.
+    - Check 7 is always INFO — it is a diagnostic, not a correctness gate.
+      Set n_perturbations=0 to skip it.
     """
     score_matrix = _build_dense_score_matrix(Q_obj, N)
     all_cells = list(range(N))
@@ -402,6 +475,38 @@ def run_pruning_validation(
     knee_keep = _detect_knee(sweep_rows)
     check5_status = "PASS" if knee_keep is not None and knee_keep != max(row["tier3_keep"] for row in sweep_rows) else "INFO"
 
+    # Check 6: over-keeping (derived from check_5 sweep data — no extra computation)
+    current_K = len(surviving_cells)
+    K_at_knee: int | None = None
+    if knee_keep is not None:
+        for row in sweep_rows:
+            if row["tier3_keep"] == knee_keep:
+                K_at_knee = row["K"]
+                break
+
+    if K_at_knee is None:
+        check6_status = "INFO"
+        check6_ratio: float | None = None
+    else:
+        check6_ratio = current_K / K_at_knee
+        if check6_ratio <= overkeeping_pass_ratio:
+            check6_status = "PASS"
+        elif check6_ratio <= overkeeping_fail_ratio:
+            check6_status = "WARN"
+        else:
+            check6_status = "FAIL"
+
+    # Check 7: perturbation selection frequency (optional — skip if n_perturbations=0)
+    if n_perturbations > 0:
+        check7: Dict = _perturbation_selection_frequency(
+            score_matrix, surviving_cells, m,
+            n_perturbations=n_perturbations,
+            sigma_scale=perturbation_sigma_scale,
+            seed=seed + 10,
+        )
+    else:
+        check7 = {"status": "SKIP", "K": current_K, "K_effective": current_K}
+
     results = {
         "summary": {
             "original_N": N,
@@ -452,6 +557,21 @@ def run_pruning_validation(
                 "before the largest keep value tested."
             ),
         },
+        "check_6_overkeeping": {
+            "status": check6_status,
+            "current_K": current_K,
+            "K_at_knee": K_at_knee,
+            "knee_keep": knee_keep,
+            "ratio": check6_ratio,
+            "pass_ratio": overkeeping_pass_ratio,
+            "fail_ratio": overkeeping_fail_ratio,
+            "note": (
+                "PASS/WARN/FAIL based on current_K / K_at_knee ratio. "
+                "WARN = efficiency loss (too many qubits for solver). "
+                "FAIL = severe over-keeping. Not a correctness failure."
+            ),
+        },
+        "check_7_perturbation_frequency": check7,
     }
     return results
 
@@ -508,6 +628,33 @@ def print_pruning_validation_report(results: Dict) -> None:
             f"  keep={row['tier3_keep']:>2} -> K={row['K']:>4}  "
             f"greedy={row['greedy_score']:.4f}  gap_vs_full={row['greedy_gap_vs_full_pct']:.2f}%"
         )
+
+    c6 = results.get("check_6_overkeeping", {})
+    if c6:
+        print(f"Check 6 - Over-keeping: {c6['status']}")
+        if c6.get("K_at_knee") is not None:
+            print(
+                f"  current_K={c6['current_K']}  K_at_knee={c6['K_at_knee']}  "
+                f"ratio={c6['ratio']:.2f}  "
+                f"(PASS≤{c6['pass_ratio']}x  WARN≤{c6['fail_ratio']}x  FAIL>)"
+            )
+        else:
+            print("  No sweep knee detected — over-keeping cannot be assessed.")
+
+    c7 = results.get("check_7_perturbation_frequency", {})
+    if c7 and c7.get("status") not in ("SKIP", None):
+        print(f"Check 7 - Perturbation frequency ({c7.get('n_perturbations', '?')} runs): {c7['status']}")
+        print(
+            f"  K={c7['K']}  K_effective={c7['K_effective']}  "
+            f"core={len(c7.get('core_cells', []))} (>80%)  "
+            f"competitive={len(c7.get('competitive_cells', []))} (1-80%)  "
+            f"marginal={len(c7.get('marginal_cells', []))} (≤1%)"
+        )
+        if c7.get("marginal_cells"):
+            print(f"  Low-evidence survivors: {c7['marginal_cells']}")
+    elif c7.get("status") == "SKIP":
+        print("Check 7 - Perturbation frequency: SKIP")
+
     print("=" * 72)
 
 
@@ -705,6 +852,8 @@ def print_dataset_validation_suite(results: Sequence[Dict]) -> None:
         c3 = validation["check_3_ga_convergence"]
         c4 = validation["check_4_neighbor_coverage"]
         c5 = validation["check_5_sensitivity_sweep"]
+        c6 = validation.get("check_6_overkeeping", {})
+        c7 = validation.get("check_7_perturbation_frequency", {})
 
         print(case["label"])
         print(
@@ -713,10 +862,21 @@ def print_dataset_validation_suite(results: Sequence[Dict]) -> None:
         )
         print(
             f"  checks: greedy={c1['status']}  random={c2['status']}  "
-            f"ga={c3['status']}  neighbors={c4['status']}  sweep={c5['status']}"
+            f"ga={c3['status']}  neighbors={c4['status']}  sweep={c5['status']}  "
+            f"over-keeping={c6.get('status', 'N/A')}"
         )
         print(
             f"  greedy gap={c1['score_gap_pct']:.2f}%  "
             f"ga gap={c3['best_gap_pct']:.2f}%  knee={c5['knee_keep']}"
+            + (
+                f"  K_at_knee={c6['K_at_knee']}  ratio={c6['ratio']:.2f}"
+                if c6.get("K_at_knee") is not None else ""
+            )
         )
+        if c7.get("status") == "INFO":
+            print(
+                f"  perturbation: K_effective={c7['K_effective']}  "
+                f"marginal={len(c7.get('marginal_cells', []))}  "
+                f"({c7.get('marginal_fraction', 0)*100:.1f}% low-evidence)"
+            )
         print("-" * 96)

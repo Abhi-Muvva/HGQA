@@ -544,6 +544,76 @@ def run_qaoa(
 
 
 
+def _build_qaoa_xy_circuit(
+    K: int,
+    m: int,
+    p: int,
+    h: Dict[int, float],
+    J: Dict[Tuple[int, int], float],
+    initial_positions: Optional[List[int]] = None,
+) -> "QuantumCircuit":
+    """
+    QAOA circuit with XY ring mixer.
+
+    Initial state : X gates on initial_positions (defaults to [0..m-1])
+    Cost layer    : Rz / Rzz rotations from h and J (no H5)
+    Mixer layer   : ring XY = Σ_{i=0}^{K-2} RXX(2β) RYY(2β) on pairs (i, i+1)
+
+    The XY mixer swaps |01⟩↔|10⟩ while leaving |00⟩ and |11⟩ unchanged,
+    so Hamming weight is preserved throughout. All sampled bitstrings have
+    exactly m ones — H5 penalty is never needed.
+
+    Parameters
+    ----------
+    K, m, p           : qubits, target ones, QAOA depth
+    h                 : {qubit: Ising-Z coeff}
+    J                 : {(i, j): Ising-ZZ coeff}, i < j
+    initial_positions : m qubit indices to initialise to |1⟩.
+                        Pass different positions per restart to explore
+                        different regions of the feasible subspace.
+                        Defaults to [0, 1, ..., m-1].
+
+    Returns
+    -------
+    QuantumCircuit with 2*p parameters θ[0..p-1] (gamma) and θ[p..2p-1] (beta),
+    plus K measurement gates.
+    """
+    from qiskit import QuantumCircuit
+    from qiskit.circuit import ParameterVector
+
+    theta = ParameterVector('θ', 2 * p)   # θ[0..p-1]=gamma, θ[p..2p-1]=beta
+
+    qc = QuantumCircuit(K, K)
+
+    # Initial feasible state: flip the m chosen qubit positions to |1⟩
+    _positions = initial_positions if initial_positions is not None else list(range(m))
+    for i in _positions:
+        qc.x(i)
+
+    for layer in range(p):
+        gamma_l = theta[layer]
+        beta_l  = theta[p + layer]
+
+        # Cost layer: exp(-i γ H_cost)
+        # Single-Z:  exp(-i γ h_i Z_i) = Rz(2 γ h_i, i)
+        for i, coeff in h.items():
+            if coeff != 0.0:
+                qc.rz(2.0 * coeff * gamma_l, i)
+        # ZZ pairs:  exp(-i γ J_{ij} Z_i Z_j) = Rzz(2 γ J_{ij}, i, j)
+        for (i, j), coeff in J.items():
+            if coeff != 0.0:
+                qc.rzz(2.0 * coeff * gamma_l, i, j)
+
+        # XY ring mixer: exp(-i β (XX+YY)_{i,i+1}) for each neighbouring pair
+        # XX and YY commute → product = joint exponential
+        for i in range(K - 1):
+            qc.rxx(2.0 * beta_l, i, i + 1)
+            qc.ryy(2.0 * beta_l, i, i + 1)
+
+    qc.measure(range(K), range(K))
+    return qc
+
+
 def run_qaoa_mps(
     Q_obj: Dict,
     h5_params: Dict,
@@ -559,7 +629,7 @@ def run_qaoa_mps(
     max_bond_dimension: Optional[int] = None,
     truncation_threshold: float = 1e-12,
     sampler_measure_algorithm: str = "mps_apply_measure",
-    include_h5: bool = True,
+    include_h5: bool = False,
 ) -> Tuple[List[Tuple[float, List[int], float]], np.ndarray]:
     """
     QAOA optimization and sampling via Qiskit Aer MPS simulation.
@@ -591,13 +661,14 @@ def run_qaoa_mps(
     max_bond_dimension : optional MPS bond-dimension cap
     truncation_threshold : MPS truncation threshold
     sampler_measure_algorithm : "mps_apply_measure" or "mps_probabilities"
-    include_h5 : if False (default), H5 cardinality constraint is EXCLUDED from
-                 the QAOA Hamiltonian entirely. This removes K*(K-1)/2 all-to-all
-                 ZZ gates from the cost layer, making circuits dramatically
-                 cheaper for large K. Feasibility (popcount == m) is enforced by
-                 post-selection on sampled bitstrings instead. Recommended for
-                 K > ~30 where H5 dominates circuit depth.
-                 If True, H5 is merged into the Hamiltonian (original behaviour).
+    include_h5 : if False (default), uses XY-ring-mixer QAOA.
+                 The XY mixer swaps |01⟩↔|10⟩, preserving Hamming weight, so all
+                 sampled bitstrings have exactly m ones — H5 is never needed.
+                 Initial state is |1^m 0^{K-m}⟩. Circuit has 2p parameters and
+                 K-1 XY pairs per layer instead of K*(K-1)/2 H5 ZZ pairs.
+                 For K=74: removes 2701 ZZ gates, adds 73 XY pairs per layer.
+                 If True, uses standard QAOAAnsatz with H5 merged into the
+                 Hamiltonian (original behaviour, ~3 min/eval for K≥74).
 
     Returns
     -------
@@ -609,10 +680,12 @@ def run_qaoa_mps(
 
     import os
     from qiskit import QuantumCircuit, transpile
-    from qiskit.circuit.library import QAOAAnsatz
     from qiskit_aer import AerSimulator
 
     from qubo_builder import evaluate_solution
+
+    if include_h5:
+        from qiskit.circuit.library import QAOAAnsatz
 
     # ------------------------------------------------------------------
     # Local helper
@@ -686,69 +759,79 @@ def run_qaoa_mps(
             f"measure_algo={sampler_measure_algorithm}, threads={_n_threads}"
         )
 
-    # ── Build Ising coefficients and cost Hamiltonian ──────────────────────────
-    # When include_h5=False we use Q_obj only (H1–H4, H6).
-    # H5's K*(K-1)/2 all-to-all ZZ gates are excluded from the circuit; the
-    # cardinality constraint is enforced purely by post-selection on popcount==m.
-    #
-    # When include_h5=True we merge H5 in (original behaviour). Useful for small K
-    # where the extra gates are tolerable and you want the optimizer to bias toward
-    # feasible solutions during the variational loop.
+    # ── Build Ising coefficients ───────────────────────────────────────────────
     if include_h5:
         h_total, J_total, offset_total = build_total_ising_coeffs(Q_obj, h5_params, N)
         cost_ham = build_cost_hamiltonian(Q_obj, h5_params, N)
         if verbose:
-            n_h5_pairs = N * (N - 1) // 2
-            print(f"  H5 INCLUDED: adds {n_h5_pairs} all-to-all ZZ terms to circuit")
+            print(f"  H5 INCLUDED: adds {N*(N-1)//2} all-to-all ZZ terms to circuit")
     else:
         h_total, J_total, offset_total = qubo_to_ising_coeffs(Q_obj, N)
-        cost_ham = ising_to_sparse_pauli_op(h_total, J_total, offset_total, N)
         if verbose:
-            n_h5_pairs = N * (N - 1) // 2
+            n_zz = sum(1 for v in J_total.values() if v != 0.0)
             print(
-                f"  H5 EXCLUDED: {n_h5_pairs} all-to-all ZZ gates removed from circuit. "
-                f"Feasibility enforced by post-selection (popcount == {m})."
+                f"  XY-mixer QAOA: H5 excluded. "
+                f"Objective has {len(h_total)} Z terms, {n_zz} ZZ terms. "
+                f"Feasibility guaranteed by Hamming-weight-preserving XY ring mixer."
             )
 
     # Strip constant offset — optimizer sees a zero-centred landscape.
-    identity_label = "I" * N
-    offset = 0.0
-    for label, coeff in cost_ham.to_list():
-        if label == identity_label:
-            offset += float(np.real(coeff))
+    if include_h5:
+        identity_label = "I" * N
+        offset = 0.0
+        for label, coeff in cost_ham.to_list():
+            if label == identity_label:
+                offset += float(np.real(coeff))
+    else:
+        offset = offset_total  # Ising constant from Q_obj = identity coefficient
 
-    # Build QAOA circuit with measurements for use in both opt and sampling.
-    qaoa_circuit_bare = QAOAAnsatz(
-        cost_operator=cost_ham,
-        reps=p,
-    ).decompose(reps=3)
-    n_params = qaoa_circuit_bare.num_parameters
-
-    # Add measurements — transpile ONCE.
-    # IMPORTANT: do NOT pass 'simulator' (the backend) to transpile().
-    # AerSimulator(method='matrix_product_state') internally inherits an IBM
-    # hardware coupling map (~63 qubits). transpile()'s _check_circuits_coupling_map
-    # reads that limit from the backend object even when coupling_map=None is passed,
-    # causing CircuitTooWideForTarget at K>63.
-    # Fix: omit backend entirely; supply basis_gates + coupling_map=None directly.
-    # The resulting transpiled circuit runs fine on the MPS simulator via .run().
-    measured_template = QuantumCircuit(N, N)
-    measured_template.compose(qaoa_circuit_bare, inplace=True)
-    measured_template.measure(range(N), range(N))
-
-    transpiled_template = transpile(
-        measured_template,
-        coupling_map=None,
-        basis_gates=["u1", "u2", "u3", "cx", "id"],
-        seed_transpiler=seed,
-        optimization_level=1,
-    )
-
-    if verbose:
-        print(
-            f"  QAOA circuit: {n_params} parameters, "
-            f"{transpiled_template.size()} gates (post-transpile)"
+    # ── Build and transpile circuit ONCE ──────────────────────────────────────
+    # IMPORTANT: do NOT pass 'simulator' to transpile().
+    # AerSimulator(method='matrix_product_state') inherits an IBM coupling map
+    # (~63 qubits) which causes CircuitTooWideForTarget for K>63 even with
+    # coupling_map=None. Omit backend; supply basis_gates directly instead.
+    if include_h5:
+        qaoa_circuit_bare = QAOAAnsatz(
+            cost_operator=cost_ham,
+            reps=p,
+        ).decompose(reps=3)
+        n_params = qaoa_circuit_bare.num_parameters
+        measured_template = QuantumCircuit(N, N)
+        measured_template.compose(qaoa_circuit_bare, inplace=True)
+        measured_template.measure(range(N), range(N))
+        circuit_to_transpile = measured_template
+    else:
+        # XY path: each restart gets its own transpiled circuit with a
+        # different random initial state — deferred to the restart loop.
+        # One sample transpile here just to report gate count.
+        n_params = 2 * p
+        _sample = transpile(
+            _build_qaoa_xy_circuit(N, m, p, h_total, J_total, list(range(m))),
+            coupling_map=None,
+            basis_gates=["u1", "u2", "u3", "cx", "id"],
+            seed_transpiler=seed,
+            optimization_level=1,
         )
+        transpiled_template = None  # built per-restart below
+        if verbose:
+            print(
+                f"  Circuit [XY-ring]: {n_params} params, "
+                f"~{_sample.size()} gates per restart (random initial state each restart)"
+            )
+
+    if include_h5:
+        transpiled_template = transpile(
+            circuit_to_transpile,
+            coupling_map=None,
+            basis_gates=["u1", "u2", "u3", "cx", "id"],
+            seed_transpiler=seed,
+            optimization_level=1,
+        )
+        if verbose:
+            print(
+                f"  Circuit [QAOAAnsatz+H5]: {n_params} params, "
+                f"{transpiled_template.size()} gates (post-transpile)"
+            )
 
     # shots_opt: fewer shots during optimization to keep COBYLA evals fast.
     # The tutorial shows counts → energy works at any shot count.
@@ -757,79 +840,96 @@ def run_qaoa_mps(
     rng = np.random.default_rng(seed)
     best_cost_shifted = float("inf")
     best_optimal_params: Optional[np.ndarray] = None
+    best_template = None  # transpiled circuit of the best restart (for final sampling)
 
     # ------------------------------------------------------------------
-    # Variational optimization — parallel restarts via ThreadPoolExecutor
+    # Variational optimization — sequential restarts with per-eval tqdm
     #
-    # Why not sequential? COBYLA evaluates one circuit per iteration, so a
-    # single restart occupies ~1 core regardless of max_parallel_threads.
-    # MPS tensors at bond_dim ≤ 64 are also too small (matrices ≤ 64×64)
-    # for BLAS threading to give meaningful speedup per gate.
-    #
-    # Fix: run all n_restarts in parallel. Each restart gets its own
-    # AerSimulator instance and threads_per_restart = _n_threads//n_restarts
-    # OpenMP threads, so the total stays at _n_threads. Aer releases the
-    # GIL during C++ simulation → Python threads give true CPU parallelism.
+    # MPS simulation is parallelized internally via BLAS/OpenMP, so each
+    # sequential restart uses all _n_threads CPU cores. ProcessPoolExecutor
+    # on macOS uses "spawn", requiring fresh Python interpreter startup per
+    # worker — that overhead alone exceeded 16 minutes before any simulation
+    # began.
     # ------------------------------------------------------------------
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    try:
+        from tqdm.auto import tqdm as _tqdm
+        _has_tqdm = True
+    except ImportError:
+        _has_tqdm = False
 
-    threads_per_restart = max(1, _n_threads // n_restarts)
-    restart_seeds       = [seed + i if seed is not None else None for i in range(n_restarts)]
     initial_params_list = [rng.uniform(-np.pi, np.pi, n_params) for _ in range(n_restarts)]
 
-    def _one_restart(restart_idx: int):
-        r_seed = restart_seeds[restart_idx]
-        r_init = initial_params_list[restart_idx]
-
-        r_sim = AerSimulator(method="matrix_product_state")
-        r_sim.set_options(
-            matrix_product_state_truncation_threshold=truncation_threshold,
-            mps_sample_measure_algorithm=sampler_measure_algorithm,
-            max_parallel_threads=threads_per_restart,
-            max_parallel_shots=threads_per_restart,
-            max_parallel_experiments=1,
-        )
-        if max_bond_dimension is not None:
-            r_sim.set_options(matrix_product_state_max_bond_dimension=max_bond_dimension)
-
-        eval_count = [0]
-
-        def objective(params: np.ndarray) -> float:
-            eval_count[0] += 1
-            bound = transpiled_template.assign_parameters(params)
-            counts = r_sim.run(
-                bound, shots=shots_opt, seed_simulator=r_seed,
-            ).result().get_counts()
-            return counts_to_energy(counts, h_total, J_total, offset_total, N) - offset
-
-        opt = scipy_minimize(objective, r_init, method="COBYLA", options={"maxiter": max_iter})
-        return restart_idx, float(opt.fun), np.asarray(opt.x, dtype=float), eval_count[0]
-
     if verbose:
-        print(
-            f"  Parallel restarts: {n_restarts} × {threads_per_restart} thread(s) each "
-            f"(total threads: {threads_per_restart * n_restarts})"
-        )
+        print(f"  Sequential restarts: {n_restarts}, up to {max_iter} COBYLA evals each")
 
-    restart_results: List[tuple] = []
-    with ThreadPoolExecutor(max_workers=n_restarts) as pool:
-        futures = {pool.submit(_one_restart, i): i for i in range(n_restarts)}
-        for future in as_completed(futures):
-            restart_results.append(future.result())
+    for restart_idx in range(n_restarts):
+        init_params = initial_params_list[restart_idx]
+        eval_count = [0]
+        best_so_far = [float("inf")]
 
-    restart_results.sort(key=lambda t: t[0])  # restore index order for readable output
+        if include_h5:
+            my_template = transpiled_template.copy()
+        else:
+            # Random initial feasible state: m positions drawn uniformly from 0..K-1.
+            # Each restart explores a different region of the feasible subspace —
+            # avoids all restarts clustering around the fixed |1^m 0^{K-m}⟩ state.
+            _init_pos = sorted(rng.choice(N, size=m, replace=False).tolist())
+            my_template = transpile(
+                _build_qaoa_xy_circuit(N, m, p, h_total, J_total, _init_pos),
+                coupling_map=None,
+                basis_gates=["u1", "u2", "u3", "cx", "id"],
+                seed_transpiler=None,
+                optimization_level=1,
+            )
 
-    for ridx, cost, params, evals in restart_results:
+        bar = None
+        if _has_tqdm and verbose:
+            bar = _tqdm(
+                total=max_iter,
+                desc=f"Restart {restart_idx+1}/{n_restarts}  best=?",
+                unit="eval",
+                dynamic_ncols=True,
+                leave=True,
+            )
+
+        def objective(
+            params: np.ndarray,
+            _bar=bar, _ec=eval_count, _bs=best_so_far,
+            _tmpl=my_template, _ridx=restart_idx,
+        ) -> float:
+            _ec[0] += 1
+            bound = _tmpl.assign_parameters(params)
+            counts = simulator.run(
+                bound, shots=shots_opt, seed_simulator=None,
+            ).result().get_counts()
+            energy = counts_to_energy(counts, h_total, J_total, offset_total, N) - offset
+            if energy < _bs[0]:
+                _bs[0] = energy
+            if _bar is not None:
+                _bar.update(1)
+                _bar.set_description(
+                    f"Restart {_ridx+1}/{n_restarts}  best={_bs[0]+offset:.4f}"
+                )
+            return energy
+
+        opt = scipy_minimize(objective, init_params, method="COBYLA", options={"maxiter": max_iter})
+
+        if bar is not None:
+            bar.set_description(
+                f"Restart {restart_idx+1}/{n_restarts}  DONE  best={float(opt.fun)+offset:.4f}"
+            )
+            bar.close()
+
+        cost = float(opt.fun)
         if verbose:
             print(
-                f"  Restart {ridx + 1}/{n_restarts}: "
-                f"cost={cost:.6f} (shifted), "
-                f"raw={cost + offset:.6f}, "
-                f"evals={evals}"
+                f"  Restart {restart_idx+1}/{n_restarts}: "
+                f"cost={cost:.6f} (shifted), raw={cost+offset:.6f}, evals={eval_count[0]}"
             )
         if cost < best_cost_shifted:
             best_cost_shifted = cost
-            best_optimal_params = params
+            best_optimal_params = np.asarray(opt.x, dtype=float)
+            best_template = my_template
 
     if best_optimal_params is None:
         raise RuntimeError("QAOA optimization failed to produce any result.")
@@ -843,9 +943,9 @@ def run_qaoa_mps(
     optimal_params = best_optimal_params
 
     # ------------------------------------------------------------------
-    # Final sampling — bind optimal params, run with full shot budget
+    # Final sampling — bind optimal params from best restart, run with full shot budget
     # ------------------------------------------------------------------
-    bound_final = transpiled_template.assign_parameters(optimal_params)
+    bound_final = best_template.assign_parameters(optimal_params)
 
     run_result = simulator.run(
         bound_final,
