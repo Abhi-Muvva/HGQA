@@ -12,6 +12,18 @@ The core idea: after building a QUBO over the full grid, a cell pruner reduces t
 
 The pipeline operates across three problem-size tiers, each using the most appropriate solver; from exact brute-force on tiny instances to MPS-based QAOA simulation for proof-of-concept at medium scale.
 
+## Project Layout
+
+| Path | Contents |
+| --- | --- |
+| `src/` | Reusable pipeline modules: data loading, QUBO construction, pruning, QAOA, GA, and helpers. |
+| `notebooks/` | Ordered experiment notebooks. See `notebooks/NOTEBOOK_INDEX.md`. |
+| `data/` | Dataset files and dataset-family indexes. Small, large, and metro datasets are grouped by family; active medium-city files stay directly under `data/`. |
+| `scripts/` | Dataset generators and medium-city batch runner. |
+| `results/` | Generated experiment outputs, tuning exports, and medium-variant runner logs. |
+| `docs/` | Development notes and literature references. |
+| `ALGO_RESEARCH/` | Research notes, reading lists, and downloaded paper PDFs. |
+
 ---
 
 ## Problem Definition

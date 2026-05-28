@@ -544,18 +544,129 @@ def run_qaoa(
 
 
 
+# ===========================================================================
+# Dicke state preparation — Bärtschi & Eidenbenz (2019), arXiv:1904.07358
+#
+# Prepares |D(K,m)⟩ = 1/√C(K,m) Σ_{|x|=m} |x⟩, the uniform superposition
+# over all K-qubit strings with exactly m ones.  This is the ground state of
+# the XY ring mixer and the provably optimal initial state for XY-QAOA on
+# cardinality-constrained problems (Wang et al. 2020, He et al. 2023).
+#
+# Gate counts:  O(m·K) two-qubit gates,  O(K) depth.
+# Max qubit span of any gate: m  (highly MPS-compatible; bond dim ≤ m+1).
+# ===========================================================================
+
+def _dicke_gate_ry_i(n: int) -> "QuantumCircuit":
+    """Gate (i) from §2.2 of arXiv:1904.07358 — 2-qubit split rotation."""
+    from qiskit import QuantumCircuit
+    from qiskit.circuit.library import RYGate
+    qc = QuantumCircuit(2)
+    qc.cx(0, 1)
+    qc.append(RYGate(2.0 * np.arccos(np.sqrt(1.0 / n))).control(ctrl_state="1"), [1, 0])
+    qc.cx(0, 1)
+    return qc
+
+
+def _dicke_gate_ry_ii(l: int, n: int) -> "QuantumCircuit":
+    """Gate (ii)_l from §2.2 of arXiv:1904.07358 — 3-qubit split rotation."""
+    from qiskit import QuantumCircuit
+    from qiskit.circuit.library import RYGate
+    qc = QuantumCircuit(3)
+    qc.cx(0, 2)
+    qc.append(
+        RYGate(2.0 * np.arccos(np.sqrt(float(l) / n))).control(
+            num_ctrl_qubits=2, ctrl_state="11"
+        ),
+        [2, 1, 0],
+    )
+    qc.cx(0, 2)
+    return qc
+
+
+def _dicke_scs(n: int, k: int) -> "QuantumCircuit":
+    """SCS_{n,k} gate (Definition 3, arXiv:1904.07358) on k+1 qubits."""
+    from qiskit import QuantumCircuit
+    qc = QuantumCircuit(k + 1)
+    qc.append(_dicke_gate_ry_i(n), [k - 1, k])
+    for l in range(2, k + 1):
+        qc.append(_dicke_gate_ry_ii(l, n), [k - l, k - l + 1, k])
+    return qc
+
+
+def _dicke_block1(n: int, k: int, l: int) -> "QuantumCircuit":
+    """First-product block from Lemma 2 of arXiv:1904.07358."""
+    from qiskit import QuantumCircuit, QuantumRegister
+    qr = QuantumRegister(n)
+    qc = QuantumCircuit(qr)
+    first = l - k - 1
+    last  = n - l
+    index = list(range(n))
+    if first:
+        index = index[first:]
+    if last:
+        index = index[:-last]
+    qc.append(_dicke_scs(l, k), index)
+    return qc
+
+
+def _dicke_block2(n: int, k: int, l: int) -> "QuantumCircuit":
+    """Second-product block from Lemma 2 of arXiv:1904.07358."""
+    from qiskit import QuantumCircuit, QuantumRegister
+    qr = QuantumRegister(n)
+    qc = QuantumCircuit(qr)
+    last  = n - l
+    index = list(range(n))
+    if last:
+        index = index[:-last]
+    qc.append(_dicke_scs(l, l - 1), index)
+    return qc
+
+
+def _dicke_state_circuit(K: int, m: int) -> "QuantumCircuit":
+    """
+    Prepare Dicke state |D(K,m)⟩ on K qubits.
+
+    Uses the Bärtschi-Eidenbenz algorithm (arXiv:1904.07358, Lemma 2).
+    O(m·K) two-qubit gates; max gate span = m (MPS bond dim stays ≤ m+1).
+
+    Parameters
+    ----------
+    K : number of qubits
+    m : Hamming weight (number of ones)
+
+    Returns
+    -------
+    QuantumCircuit (no measurements, no classical bits)
+    """
+    from qiskit import QuantumCircuit, QuantumRegister
+    qr = QuantumRegister(K)
+    qc = QuantumCircuit(qr)
+    if m == 0:
+        return qc
+    if m == K:
+        qc.x(qr)
+        return qc
+    qc.x(qr[-m:])                              # |0^{K-m} 1^m⟩ starting state
+    for l in range(m + 1, K + 1)[::-1]:        # first product in Lemma 2
+        qc.append(_dicke_block1(K, m, l), range(K))
+    for l in range(2, m + 1)[::-1]:            # second product in Lemma 2
+        qc.append(_dicke_block2(K, m, l), range(K))
+    return qc
+
+
 def _build_qaoa_xy_circuit(
     K: int,
     m: int,
     p: int,
     h: Dict[int, float],
     J: Dict[Tuple[int, int], float],
-    initial_positions: Optional[List[int]] = None,
 ) -> "QuantumCircuit":
     """
-    QAOA circuit with XY ring mixer.
+    QAOA circuit with XY ring mixer and Dicke state initialisation.
 
-    Initial state : X gates on initial_positions (defaults to [0..m-1])
+    Initial state : |D(K,m)⟩ — uniform superposition over all weight-m states.
+                    Ground state of the XY mixer; provably optimal start for
+                    cardinality-constrained XY-QAOA (arXiv:1904.07358, 2305.03857).
     Cost layer    : Rz / Rzz rotations from h and J (no H5)
     Mixer layer   : ring XY = Σ_{i=0}^{K-2} RXX(2β) RYY(2β) on pairs (i, i+1)
 
@@ -565,13 +676,9 @@ def _build_qaoa_xy_circuit(
 
     Parameters
     ----------
-    K, m, p           : qubits, target ones, QAOA depth
-    h                 : {qubit: Ising-Z coeff}
-    J                 : {(i, j): Ising-ZZ coeff}, i < j
-    initial_positions : m qubit indices to initialise to |1⟩.
-                        Pass different positions per restart to explore
-                        different regions of the feasible subspace.
-                        Defaults to [0, 1, ..., m-1].
+    K, m, p : qubits, target ones, QAOA depth
+    h       : {qubit: Ising-Z coeff}
+    J       : {(i, j): Ising-ZZ coeff}, i < j
 
     Returns
     -------
@@ -585,10 +692,10 @@ def _build_qaoa_xy_circuit(
 
     qc = QuantumCircuit(K, K)
 
-    # Initial feasible state: flip the m chosen qubit positions to |1⟩
-    _positions = initial_positions if initial_positions is not None else list(range(m))
-    for i in _positions:
-        qc.x(i)
+    # Initial state: Dicke state |D(K,m)⟩ — ground state of the XY mixer.
+    # This replaces the previous single-basis-state (random X-gate) initialisation,
+    # which broke adiabatic alignment and caused the QAOA-vs-GA quality gap.
+    qc.compose(_dicke_state_circuit(K, m), inplace=True)
 
     for layer in range(p):
         gamma_l = theta[layer]
@@ -801,22 +908,20 @@ def run_qaoa_mps(
         measured_template.measure(range(N), range(N))
         circuit_to_transpile = measured_template
     else:
-        # XY path: each restart gets its own transpiled circuit with a
-        # different random initial state — deferred to the restart loop.
-        # One sample transpile here just to report gate count.
+        # XY path: all restarts share the same Dicke-state circuit.
+        # Build and transpile ONCE here; the restart loop uses .copy().
         n_params = 2 * p
-        _sample = transpile(
-            _build_qaoa_xy_circuit(N, m, p, h_total, J_total, list(range(m))),
+        transpiled_template = transpile(
+            _build_qaoa_xy_circuit(N, m, p, h_total, J_total),
             coupling_map=None,
             basis_gates=["u1", "u2", "u3", "cx", "id"],
             seed_transpiler=seed,
             optimization_level=1,
         )
-        transpiled_template = None  # built per-restart below
         if verbose:
             print(
-                f"  Circuit [XY-ring]: {n_params} params, "
-                f"~{_sample.size()} gates per restart (random initial state each restart)"
+                f"  Circuit [XY-ring + Dicke |D({N},{m})⟩]: {n_params} params, "
+                f"{transpiled_template.size()} gates (post-transpile, shared across restarts)"
             )
 
     if include_h5:
@@ -867,20 +972,7 @@ def run_qaoa_mps(
         eval_count = [0]
         best_so_far = [float("inf")]
 
-        if include_h5:
-            my_template = transpiled_template.copy()
-        else:
-            # Random initial feasible state: m positions drawn uniformly from 0..K-1.
-            # Each restart explores a different region of the feasible subspace —
-            # avoids all restarts clustering around the fixed |1^m 0^{K-m}⟩ state.
-            _init_pos = sorted(rng.choice(N, size=m, replace=False).tolist())
-            my_template = transpile(
-                _build_qaoa_xy_circuit(N, m, p, h_total, J_total, _init_pos),
-                coupling_map=None,
-                basis_gates=["u1", "u2", "u3", "cx", "id"],
-                seed_transpiler=None,
-                optimization_level=1,
-            )
+        my_template = transpiled_template.copy()
 
         bar = None
         if _has_tqdm and verbose:

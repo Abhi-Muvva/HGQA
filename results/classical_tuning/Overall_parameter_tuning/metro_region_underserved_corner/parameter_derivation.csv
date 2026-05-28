@@ -1,0 +1,13 @@
+baseline,criterion,family,parameter,selected,selected_conv_gen,selected_score,selected_time
+3.0,min baseline_eval,QUBO,alpha1,3.0,,-12.450504,
+0.5,min baseline_eval,QUBO,alpha4,0.5,,-12.450504,
+0.93,min baseline_eval,QUBO,alpha3,0.8,,-12.450504,
+0.2,min baseline_eval,QUBO,alpha6,0.15,,-12.279564,
+5,min baseline_eval,QUBO,R1,5,,-12.450504,
+3,min baseline_eval,QUBO,R4,3,,-12.450504,
+50,"min mean_score, then conv_gen/time",GA,population_size,200,23.6,-12.450504,2.0594
+300,"min mean_score, then conv_gen/time",GA,n_generations,500,65.8,-12.450504,0.8542
+0.8,"min mean_score, then conv_gen/time",GA,crossover_rate,0.5,88.8,-12.450504,0.497
+0.2,"min mean_score, then conv_gen/time",GA,mutation_rate,0.3,57.4,-12.450504,0.5244
+3,"min mean_score, then conv_gen/time",GA,tournament_size,5,65.2,-12.450504,0.511
+greedy,"min mean_score, then conv_gen/time",GA,seed_mode,greedy,65.8,-12.442408,0.5087

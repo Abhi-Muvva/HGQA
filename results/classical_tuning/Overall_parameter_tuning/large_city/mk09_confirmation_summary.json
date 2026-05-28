@@ -1,0 +1,319 @@
+{
+  "timestamp": "2026-05-28T13:40:09",
+  "source_run": "/Users/abhimuvva/Documents/Proj_HGQA/results/classical_tuning/run_20260528_115545",
+  "dataset": "large_city",
+  "N": 256,
+  "m": 7,
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "baseline_qubo_params": {
+    "alpha1": 3.0,
+    "alpha2": 0.5,
+    "alpha3": 1.15,
+    "alpha4": 0.5,
+    "alpha5": 1.0,
+    "alpha6": 0.2662,
+    "beta": 1.0,
+    "gamma": 1.0,
+    "delta": 1.0,
+    "epsilon": 1.0,
+    "lam": 122.5,
+    "R1": 4,
+    "Rs": 4,
+    "R3": 2,
+    "R4": 3,
+    "R6": 2
+  },
+  "tuned_qubo_params": {
+    "alpha1": 3.0,
+    "alpha2": 0.5,
+    "alpha3": 1.5,
+    "alpha4": 0.5,
+    "alpha5": 1.0,
+    "alpha6": 0.35,
+    "beta": 1.0,
+    "gamma": 1.0,
+    "delta": 1.0,
+    "epsilon": 1.0,
+    "lam": 122.5,
+    "R1": 4,
+    "Rs": 4,
+    "R3": 2,
+    "R4": 2,
+    "R6": 2
+  },
+  "baseline_ga_params": {
+    "population_size": 50,
+    "n_generations": 300,
+    "crossover_rate": 0.8,
+    "mutation_rate": 0.2,
+    "tournament_size": 3,
+    "seed_mode": "greedy"
+  },
+  "tuned_ga_params": {
+    "population_size": 20,
+    "n_generations": 50,
+    "crossover_rate": 0.6,
+    "mutation_rate": 0.1,
+    "tournament_size": 10,
+    "seed_mode": "greedy"
+  },
+  "parameter_derivation": [
+    {
+      "family": "QUBO",
+      "parameter": "alpha1",
+      "baseline": 3.0,
+      "selected": 3.0,
+      "criterion": "min baseline_eval",
+      "selected_score": -15.162241
+    },
+    {
+      "family": "QUBO",
+      "parameter": "alpha4",
+      "baseline": 0.5,
+      "selected": 0.5,
+      "criterion": "min baseline_eval",
+      "selected_score": -15.162241
+    },
+    {
+      "family": "QUBO",
+      "parameter": "alpha3",
+      "baseline": 1.15,
+      "selected": 1.5,
+      "criterion": "min baseline_eval",
+      "selected_score": -15.209651
+    },
+    {
+      "family": "QUBO",
+      "parameter": "alpha6",
+      "baseline": 0.2662,
+      "selected": 0.35,
+      "criterion": "min baseline_eval",
+      "selected_score": -15.162241
+    },
+    {
+      "family": "QUBO",
+      "parameter": "R1",
+      "baseline": 4,
+      "selected": 4,
+      "criterion": "min baseline_eval",
+      "selected_score": -15.162241
+    },
+    {
+      "family": "QUBO",
+      "parameter": "R4",
+      "baseline": 3,
+      "selected": 2,
+      "criterion": "min baseline_eval",
+      "selected_score": -15.162241
+    },
+    {
+      "family": "GA",
+      "parameter": "population_size",
+      "baseline": 50,
+      "selected": 20,
+      "criterion": "min mean_score, then conv_gen/time",
+      "selected_score": -15.162241,
+      "selected_time": 0.4919,
+      "selected_conv_gen": 1.0
+    },
+    {
+      "family": "GA",
+      "parameter": "n_generations",
+      "baseline": 300,
+      "selected": 50,
+      "criterion": "min mean_score, then conv_gen/time",
+      "selected_score": -15.162241,
+      "selected_time": 0.2039,
+      "selected_conv_gen": 1.0
+    },
+    {
+      "family": "GA",
+      "parameter": "crossover_rate",
+      "baseline": 0.8,
+      "selected": 0.6,
+      "criterion": "min mean_score, then conv_gen/time",
+      "selected_score": -15.162241,
+      "selected_time": 1.1961,
+      "selected_conv_gen": 1.0
+    },
+    {
+      "family": "GA",
+      "parameter": "mutation_rate",
+      "baseline": 0.2,
+      "selected": 0.1,
+      "criterion": "min mean_score, then conv_gen/time",
+      "selected_score": -15.162241,
+      "selected_time": 1.1864,
+      "selected_conv_gen": 1.0
+    },
+    {
+      "family": "GA",
+      "parameter": "tournament_size",
+      "baseline": 3,
+      "selected": 10,
+      "criterion": "min mean_score, then conv_gen/time",
+      "selected_score": -15.162241,
+      "selected_time": 1.1993,
+      "selected_conv_gen": 1.0
+    },
+    {
+      "family": "GA",
+      "parameter": "seed_mode",
+      "baseline": "greedy",
+      "selected": "greedy",
+      "criterion": "min mean_score, then conv_gen/time",
+      "selected_score": -15.162241,
+      "selected_time": 1.1997,
+      "selected_conv_gen": 1.0
+    }
+  ],
+  "confirmation_results": [
+    {
+      "label": "baseline",
+      "K": 196,
+      "best_score": -15.162240989768241,
+      "best_cells": [
+        91,
+        102,
+        151,
+        154,
+        198,
+        202,
+        211
+      ],
+      "mean_score": -15.162240989768241,
+      "std_score": 0.0,
+      "mean_time": 1.1638390917913057,
+      "std_time": 0.009243049516548182,
+      "mean_conv_gen": 1.0,
+      "baseline_eval": -15.162240989768241,
+      "pruning": {
+        "tier1": 0,
+        "tier2": 0,
+        "tier3": 60,
+        "reduction_pct": 23.44
+      }
+    },
+    {
+      "label": "tuned_qubo",
+      "K": 198,
+      "best_score": -15.370540111732291,
+      "best_cells": [
+        102,
+        151,
+        154,
+        163,
+        198,
+        202,
+        211
+      ],
+      "mean_score": -15.370540111732291,
+      "std_score": 0.0,
+      "mean_time": 1.0520515084033832,
+      "std_time": 0.008514093775339949,
+      "mean_conv_gen": 1.0,
+      "baseline_eval": -15.209650608969863,
+      "pruning": {
+        "tier1": 0,
+        "tier2": 0,
+        "tier3": 58,
+        "reduction_pct": 22.66
+      }
+    },
+    {
+      "label": "tuned_ga",
+      "K": 196,
+      "best_score": -15.162240989768241,
+      "best_cells": [
+        91,
+        102,
+        151,
+        154,
+        198,
+        202,
+        211
+      ],
+      "mean_score": -15.162240989768241,
+      "std_score": 0.0,
+      "mean_time": 0.07458738340064883,
+      "std_time": 0.0006956257462738445,
+      "mean_conv_gen": 1.0,
+      "baseline_eval": -15.162240989768241,
+      "pruning": {
+        "tier1": 0,
+        "tier2": 0,
+        "tier3": 60,
+        "reduction_pct": 23.44
+      }
+    },
+    {
+      "label": "tuned_combined",
+      "K": 198,
+      "best_score": -15.370540111732291,
+      "best_cells": [
+        102,
+        151,
+        154,
+        163,
+        198,
+        202,
+        211
+      ],
+      "mean_score": -15.370540111732291,
+      "std_score": 0.0,
+      "mean_time": 0.06843347538961098,
+      "std_time": 0.00099790441056126,
+      "mean_conv_gen": 1.0,
+      "baseline_eval": -15.209650608969863,
+      "pruning": {
+        "tier1": 0,
+        "tier2": 0,
+        "tier3": 58,
+        "reduction_pct": 22.66
+      }
+    }
+  ],
+  "tuned_full_vs_pruned": {
+    "full_K": 256,
+    "pruned_K": 198,
+    "full_mean_time": 0.09161248339805753,
+    "full_std_time": 0.0007768406525899455,
+    "pruned_mean_time": 0.06737227481789887,
+    "pruned_std_time": 0.000337507832380793,
+    "speedup": 1.3597950142796533,
+    "full_mean_score": -15.370540111732291,
+    "pruned_mean_score": -15.370540111732291
+  },
+  "best_confirmed": {
+    "label": "tuned_qubo",
+    "K": 198,
+    "best_score": -15.370540111732291,
+    "best_cells": [
+      102,
+      151,
+      154,
+      163,
+      198,
+      202,
+      211
+    ],
+    "mean_score": -15.370540111732291,
+    "std_score": 0.0,
+    "mean_time": 1.0520515084033832,
+    "std_time": 0.008514093775339949,
+    "mean_conv_gen": 1.0,
+    "baseline_eval": -15.209650608969863,
+    "pruning": {
+      "tier1": 0,
+      "tier2": 0,
+      "tier3": 58,
+      "reduction_pct": 22.66
+    }
+  }
+}
